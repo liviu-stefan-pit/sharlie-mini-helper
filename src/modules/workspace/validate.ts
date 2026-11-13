@@ -44,16 +44,40 @@ export async function validateWorkspacePath(candidate: string, appRoot: string):
     return { ok: false, error: "The workspace cannot be the app folder, inside it, or contain it" };
   }
 
+  const writable = await runSerializedProbe(real);
+  if (!writable) return { ok: false, error: "Workspace folder is not writable" };
+
+  return { ok: true, path: real };
+}
+
+const probeQueues = new Map<string, Promise<void>>();
+
+/** One write and delete of `.sharlie-write-test` at a time for the same real path. */
+function runSerializedProbe(real: string): Promise<boolean> {
+  const key = fold(real);
+  const previous = probeQueues.get(key) ?? Promise.resolve();
+  const outcome = previous.then(() => writeProbe(real));
+  const done = outcome.then(
+    () => undefined,
+    () => undefined,
+  );
+  probeQueues.set(key, done);
+  void done.then(() => {
+    if (probeQueues.get(key) === done) probeQueues.delete(key);
+  });
+  return outcome;
+}
+
+async function writeProbe(real: string): Promise<boolean> {
   const probe = path.join(real, ".sharlie-write-test");
   try {
     await fs.writeFile(probe, "ok", "utf8");
     await fs.unlink(probe);
+    return true;
   } catch {
     await fs.rm(probe, { force: true }).catch(() => undefined);
-    return { ok: false, error: "Workspace folder is not writable" };
+    return false;
   }
-
-  return { ok: true, path: real };
 }
 
 function conflictsWithApp(real: string, appReal: string): boolean {

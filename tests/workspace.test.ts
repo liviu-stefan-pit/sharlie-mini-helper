@@ -82,6 +82,24 @@ describe("workspace settings", () => {
     }
   });
 
+  test("overlapping checks on one folder both succeed", async () => {
+    const appRoot = await fs.mkdtemp(path.join(os.tmpdir(), "sharlie-workspace-app-"));
+    const folder = await fs.mkdtemp(path.join(os.tmpdir(), "sharlie-workspace-overlap-"));
+    try {
+      const [first, second] = await Promise.all([
+        validateWorkspacePath(folder, appRoot),
+        validateWorkspacePath(folder, appRoot),
+      ]);
+      const real = await fs.realpath(folder);
+      assert.deepEqual(first, { ok: true, path: real });
+      assert.deepEqual(second, { ok: true, path: real });
+      await assert.rejects(fs.stat(path.join(real, ".sharlie-write-test")));
+    } finally {
+      await fs.rm(appRoot, { recursive: true, force: true });
+      await fs.rm(folder, { recursive: true, force: true });
+    }
+  });
+
   test("accepts a fresh folder and removes the write probe", async () => {
     const appRoot = await fs.mkdtemp(path.join(os.tmpdir(), "sharlie-workspace-app-"));
     const folder = await fs.mkdtemp(path.join(os.tmpdir(), "sharlie-workspace-ok-"));
