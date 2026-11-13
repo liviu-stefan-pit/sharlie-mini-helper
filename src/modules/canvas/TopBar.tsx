@@ -1,7 +1,7 @@
 /**
  * Responsibility: slim command row for the canvas.
  * Inputs: pipeline name, saved pipelines, workspace status, theme, and actions.
- * Outputs: add, save, load, import, export, run, theme, library, and settings controls.
+ * Outputs: add, save, load, import, export, run, theme, library, dependencies, and settings controls.
  */
 import type { NodeKind, PipelineSummary } from "../graph/types";
 import type { Theme } from "./theme";
@@ -23,6 +23,8 @@ export function TopBar({
   theme,
   onToggleTheme,
   onOpenLibrary,
+  onOpenDependencies,
+  problemCount,
   onOpenSettings,
   workspaceName,
   workspaceValid,
@@ -50,6 +52,8 @@ export function TopBar({
   theme: Theme;
   onToggleTheme: () => void;
   onOpenLibrary: () => void;
+  onOpenDependencies: () => void;
+  problemCount: number;
   onOpenSettings: () => void;
   workspaceName: string | null;
   workspaceValid: boolean;
@@ -141,6 +145,18 @@ export function TopBar({
       </button>
       <button type="button" className={ghostButtonClass} onClick={onOpenLibrary}>
         Library
+      </button>
+      <button
+        type="button"
+        className={
+          problemCount > 0
+            ? `${ghostButtonClass} border-red-300 text-red-600 dark:border-red-800 dark:text-red-600`
+            : ghostButtonClass
+        }
+        title={problemCount > 0 ? `${problemCount} missing item(s). Click for details.` : undefined}
+        onClick={onOpenDependencies}
+      >
+        {problemCount > 0 ? `Dependencies (${problemCount})` : "Dependencies"}
       </button>
       <button type="button" className={ghostButtonClass} onClick={onOpenSettings}>
         Settings

@@ -1,26 +1,57 @@
 /**
- * Responsibility: export and import a workflow as a .sharlie file.
- * Inputs: POST /api/sharlie/export with an id and includeFiles flag, or POST /api/sharlie/import with no body.
- * Outputs: a saved path, or an imported id, plus warnings, or a cancelled flag. No secrets are written.
+ * Responsibility: export and import a workflow as a .sharlie file, and report workflow health.
+ * Inputs: POST /api/sharlie/export, POST /api/sharlie/import, or POST /api/workflow/health with a pipeline body.
+ * Outputs: a saved path, an imported id plus warnings, a cancelled flag, or workflow health. No secrets are written.
  */
 import fs from "node:fs/promises";
 import path from "node:path";
 import { scanAgents } from "../../src/modules/agents/agentFile";
+import { GraphError } from "../../src/modules/graph/resolve";
 import { defaultCursorHome, libraryRoot, scanLibrary } from "../../src/modules/library";
 import { SharlieFormatError, LIMITS } from "../../src/modules/sharlie/format";
 import { buildSharliePackage } from "../../src/modules/sharlie/pack";
 import { parseSharliePackage } from "../../src/modules/sharlie/parse";
 import { importSharliePackage } from "../../src/modules/sharlie/unpack";
 import { isSafePipelineId, newPipelineId, readPipeline, workflowDir } from "../../src/modules/storage/pipelines";
+import { checkWorkflowHealth } from "../../src/modules/workflow/health";
 import { readJson, sendJson } from "../http";
 import { openNativeDialog } from "../nativeDialog";
+import { coercePipeline } from "./coerce";
 import type { RouteContext } from "./context";
 import { requireWorkspace } from "./workspace";
 
 export async function handleSharlie(ctx: RouteContext): Promise<boolean> {
+  if (ctx.url.pathname === "/api/workflow/health") return handleHealth(ctx);
   if (ctx.url.pathname === "/api/sharlie/export") return handleExport(ctx);
   if (ctx.url.pathname === "/api/sharlie/import") return handleImport(ctx);
   return false;
+}
+
+async function handleHealth(ctx: RouteContext): Promise<boolean> {
+  if (ctx.req.method !== "POST") {
+    sendJson(ctx.res, 405, { error: "Method not allowed" });
+    return true;
+  }
+  const workspace = await requireWorkspace(ctx);
+  if (!workspace) return true;
+  let doc;
+  try {
+    doc = coercePipeline(await readJson(ctx.req));
+  } catch (error) {
+    if (error instanceof GraphError) {
+      sendJson(ctx.res, 400, { error: error.message });
+      return true;
+    }
+    throw error;
+  }
+  const dir = isSafePipelineId(doc.id) ? workflowDir(workspace, doc.id) : path.join(workspace, "__unsaved__");
+  const library = await scanLibrary({
+    cursorHome: defaultCursorHome(),
+    appLibraryRoot: libraryRoot(ctx.appRoot),
+  });
+  const health = await checkWorkflowHealth({ doc, workflowDir: dir, library });
+  sendJson(ctx.res, 200, health);
+  return true;
 }
 
 async function handleExport(ctx: RouteContext): Promise<boolean> {

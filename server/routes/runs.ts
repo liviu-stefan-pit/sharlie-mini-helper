@@ -1,24 +1,28 @@
 /**
  * Responsibility: start pipeline runs and stream their events.
  * Inputs: POST /api/runs, POST /api/runs/:id/decision, GET /api/runs/:id/events, GET /api/models.
- * Outputs: a run id, a decision acknowledgement, a server-sent event stream, and the model list.
+ * Outputs: a run id and warnings, a decision acknowledgement, a server-sent event stream, and the model list.
  */
 import fs from "node:fs/promises";
 import type { ServerResponse } from "node:http";
 import { listModels } from "../../src/modules/cursor/adapter";
-import type { PipelineDocument, PipelineEdge, PipelineNode } from "../../src/modules/graph/types";
 import { GraphError, resolvePipeline } from "../../src/modules/graph/resolve";
+import type { PipelineNode } from "../../src/modules/graph/types";
 import {
   buildCatalogPrompt,
   defaultCursorHome,
   libraryRoot,
   loadEnabledMcpConfigs,
   scanLibrary,
+  type CatalogEntry,
 } from "../../src/modules/library";
+import { samePath } from "../../src/modules/library/paths";
 import { decideRun, runExists, startRun, subscribeRun, type RunStreamEvent } from "../../src/modules/runs/engine";
-import { isSafePipelineId, parseDependencies, workflowDir } from "../../src/modules/storage/pipelines";
+import { isSafePipelineId, workflowDir } from "../../src/modules/storage/pipelines";
+import { checkWorkflowHealth, healthCatalogEntries } from "../../src/modules/workflow/health";
 import { readJson, sendJson } from "../http";
 import { loadEnv } from "../loadEnv";
+import { coercePipeline, isRecord } from "./coerce";
 import type { RouteContext } from "./context";
 import { requireWorkspace } from "./workspace";
 
@@ -68,16 +72,33 @@ export async function handleRuns(ctx: RouteContext): Promise<boolean> {
       }
       const library = await loadEnabledLibrary(ctx.appRoot);
       const cwd = workflowDir(workspace, doc.id);
+      const health = await checkWorkflowHealth({ doc, workflowDir: cwd, library: library.snapshot });
+      const missingAgents = doc.nodes
+        .filter((node): node is Extract<PipelineNode, { type: "agent" }> => node.type === "agent")
+        .filter((node) => health.agents[node.id]?.status === "missing")
+        .map((node) => node.data.agentName || node.id);
+      if (missingAgents.length > 0) {
+        sendJson(ctx.res, 400, { error: `Fix the red agent nodes before running: ${missingAgents.join(", ")}` });
+        return true;
+      }
+      const extra = healthCatalogEntries(health);
+      const catalog = buildCatalogPrompt(
+        mergeEntries(enabledEntries(library.snapshot.skills), extra.skills),
+        mergeEntries(enabledEntries(library.snapshot.rules), extra.rules),
+      );
+      const warnings = health.dependencies
+        .filter((item) => item.status === "missing" || item.status === "disabled")
+        .map((item) => `${kindLabel(item.kind)} "${item.name}"`);
       await fs.mkdir(cwd, { recursive: true });
       const id = startRun({
         steps,
         apiKey,
         cwd,
         artifactPrefix: doc.id,
-        catalog: library.catalog,
+        catalog,
         mcpServers: library.mcpServers,
       });
-      sendJson(ctx.res, 201, { id });
+      sendJson(ctx.res, 201, { id, warnings });
     } catch (error) {
       if (error instanceof GraphError) {
         sendJson(ctx.res, 400, { error: error.message });
@@ -130,7 +151,7 @@ export async function handleRuns(ctx: RouteContext): Promise<boolean> {
 }
 
 async function loadEnabledLibrary(appRoot: string): Promise<{
-  catalog: string;
+  snapshot: Awaited<ReturnType<typeof scanLibrary>>;
   mcpServers: Awaited<ReturnType<typeof loadEnabledMcpConfigs>>;
 }> {
   const roots = {
@@ -138,11 +159,26 @@ async function loadEnabledLibrary(appRoot: string): Promise<{
     appLibraryRoot: libraryRoot(appRoot),
   };
   const [snapshot, mcpServers] = await Promise.all([scanLibrary(roots), loadEnabledMcpConfigs(roots)]);
-  const catalog = buildCatalogPrompt(
-    snapshot.skills.filter((skill) => skill.enabled),
-    snapshot.rules.filter((rule) => rule.enabled),
-  );
-  return { catalog, mcpServers };
+  return { snapshot, mcpServers };
+}
+
+function enabledEntries(items: readonly { title: string; description: string; path: string; enabled: boolean }[]): CatalogEntry[] {
+  return items.filter((item) => item.enabled).map((item) => ({ title: item.title, description: item.description, path: item.path }));
+}
+
+function mergeEntries(primary: readonly CatalogEntry[], extra: readonly CatalogEntry[]): CatalogEntry[] {
+  const merged: CatalogEntry[] = [];
+  for (const entry of [...primary, ...extra]) {
+    if (merged.some((kept) => samePath(kept.path, entry.path))) continue;
+    merged.push(entry);
+  }
+  return merged;
+}
+
+function kindLabel(kind: "skill" | "rule" | "mcp"): string {
+  if (kind === "skill") return "Skill";
+  if (kind === "rule") return "Rule";
+  return "MCP server";
 }
 
 function streamRun(ctx: RouteContext, id: string): void {
@@ -211,82 +247,4 @@ function shortModelError(error: unknown, apiKey: string): string {
   const line = message.split(/\r?\n/, 1)[0] ?? "";
   if (!line) return "Could not list models";
   return line.length > 160 ? `${line.slice(0, 157)}...` : line;
-}
-
-function coercePipeline(input: unknown): PipelineDocument {
-  if (!isRecord(input)) throw new GraphError("Pipeline body must be an object");
-  if (input.version !== 1) throw new GraphError("Pipeline version must be 1");
-  if (!Array.isArray(input.nodes) || !Array.isArray(input.edges)) {
-    throw new GraphError("Pipeline nodes and edges must be arrays");
-  }
-  const doc: PipelineDocument = {
-    version: 1,
-    id: typeof input.id === "string" && input.id.trim() ? input.id : "pipeline",
-    name: typeof input.name === "string" && input.name.trim() ? input.name.trim() : "Untitled",
-    nodes: input.nodes.map((node, index) => coerceNode(node, index)),
-    edges: input.edges.map((edge, index) => coerceEdge(edge, index)),
-    updatedAt: typeof input.updatedAt === "string" ? input.updatedAt : new Date().toISOString(),
-  };
-  if (input.dependencies !== undefined) {
-    doc.dependencies = parseDependencies(input.dependencies);
-  }
-  return doc;
-}
-
-function coerceNode(value: unknown, index: number): PipelineNode {
-  if (!isRecord(value)) throw new GraphError(`Node ${index} must be an object`);
-  if (typeof value.id !== "string" || !value.id.trim()) throw new GraphError(`Node ${index} id is required`);
-  const position = nodePosition(value.position);
-  const data = isRecord(value.data) ? value.data : undefined;
-  if (!data) throw new GraphError(`Node ${index} data must be an object`);
-  if (value.type === "agent") {
-    return {
-      id: value.id,
-      type: "agent",
-      position,
-      data: {
-        modelId: typeof data.modelId === "string" ? data.modelId : "",
-        agentPath: typeof data.agentPath === "string" ? data.agentPath : "",
-        agentName: typeof data.agentName === "string" ? data.agentName : "",
-        status: "idle",
-        elapsedMs: 0,
-        retryCount: 0,
-        tokens: {},
-      },
-    };
-  }
-  if (value.type === "human") {
-    return {
-      id: value.id,
-      type: "human",
-      position,
-      data: {
-        status: "idle",
-        artifactPaths: [],
-      },
-    };
-  }
-  throw new GraphError(`Node ${index} has an unknown type`);
-}
-
-function coerceEdge(value: unknown, index: number): PipelineEdge {
-  if (!isRecord(value)) throw new GraphError(`Edge ${index} must be an object`);
-  if (value.kind !== "execution") {
-    throw new GraphError(`Edge ${index} kind must be execution`);
-  }
-  if (typeof value.id !== "string" || typeof value.source !== "string" || typeof value.target !== "string") {
-    throw new GraphError(`Edge ${index} is incomplete`);
-  }
-  return { id: value.id, source: value.source, target: value.target, kind: "execution" };
-}
-
-function nodePosition(value: unknown): { x: number; y: number } {
-  if (!isRecord(value) || typeof value.x !== "number" || typeof value.y !== "number") {
-    return { x: 0, y: 0 };
-  }
-  return { x: value.x, y: value.y };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

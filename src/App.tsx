@@ -1,7 +1,7 @@
 /**
  * Responsibility: interactive pipeline canvas and its chrome.
  * Inputs: saved pipelines and graph edits.
- * Outputs: the top bar, React Flow board, inspector, settings modal, and library modal.
+ * Outputs: the top bar, React Flow board, inspector, settings modal, library modal, and dependencies modal.
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import {
@@ -18,9 +18,11 @@ import {
   type Edge,
 } from "@xyflow/react";
 import type { AgentStatus, HumanStatus, NodeKind, PipelineDocument, PipelineSummary, WorkflowDependency } from "./modules/graph/types";
+import type { WorkflowHealth } from "./modules/workflow/health";
 import {
   exportWorkflow,
   fetchModels,
+  fetchWorkflowHealth,
   importWorkflow,
   fetchPipeline,
   fetchPipelines,
@@ -47,7 +49,9 @@ import { Inspector } from "./modules/canvas/Inspector";
 import { ModelsContext, type ModelChoice } from "./modules/canvas/modelsContext";
 import { PatchContext } from "./modules/canvas/patch";
 import { RunContext, type ReviewDecision } from "./modules/canvas/runContext";
+import { DependenciesModal } from "./modules/canvas/DependenciesModal";
 import { ExportModal } from "./modules/canvas/ExportModal";
+import { HealthContext } from "./modules/canvas/healthContext";
 import { LibraryModal } from "./modules/canvas/LibraryModal";
 import { SettingsModal } from "./modules/canvas/SettingsModal";
 import { TopBar } from "./modules/canvas/TopBar";
@@ -92,9 +96,19 @@ function Editor() {
   const [warningLines, setWarningLines] = useState<string[]>([]);
   const [warningTitle, setWarningTitle] = useState("Exported with warnings");
   const [warningIntro, setWarningIntro] = useState<string | undefined>(undefined);
+  const [health, setHealth] = useState<WorkflowHealth | null>(null);
+  const [dependenciesOpen, setDependenciesOpen] = useState(false);
+  const [healthEpoch, setHealthEpoch] = useState(0);
   const workspaceReady = workspace.valid;
   const canExport = workspaceReady && runPhase === "idle";
   const canImport = workspaceReady && runPhase === "idle";
+  const healthKey = useMemo(() => {
+    const agents = nodes
+      .filter((node) => node.type === "agent")
+      .map((node) => `${node.id}|${node.data.agentPath}|${node.data.agentName}`)
+      .join("\n");
+    return `${currentId ?? ""}\n${agents}\n${JSON.stringify(dependencies)}`;
+  }, [currentId, dependencies, nodes]);
   const spawn = useRef(0);
   const pinnedId = useRef<string | null>(null);
   const sourceRef = useRef<EventSource | null>(null);
@@ -231,6 +245,7 @@ function Editor() {
     sourceRef.current = null;
     setRunPhase("idle");
     setRunId(null);
+    setHealth(null);
   }
 
   function pipelineDocument(): PipelineDocument {
@@ -249,6 +264,27 @@ function Editor() {
       dependencies,
     };
   }
+
+  useEffect(() => {
+    if (!workspaceReady) {
+      setHealth(null);
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void fetchWorkflowHealth(pipelineDocument())
+        .then((next) => {
+          if (!cancelled) setHealth(next);
+        })
+        .catch(() => {
+          if (!cancelled) setHealth(null);
+        });
+    }, 400);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [healthKey, workspaceReady, healthEpoch]);
 
   async function onSave(): Promise<string | null> {
     setSaving(true);
@@ -296,7 +332,7 @@ function Editor() {
       const result = await importWorkflow();
       if ("cancelled" in result) return;
       setPipelines(await fetchPipelines());
-      await onLoad(result.id);
+      const loaded = await onLoad(result.id);
       setNotice({ tone: "ok", text: `Imported "${result.name}"` });
       if (result.warnings.length > 0) {
         setWarningLines(result.warnings);
@@ -306,12 +342,21 @@ function Editor() {
         );
         setWarningsOpen(true);
       }
+      if (loaded) {
+        try {
+          const next = await fetchWorkflowHealth(loaded);
+          setHealth(next);
+          if (next.problemCount > 0) setDependenciesOpen(true);
+        } catch {
+          setHealth(null);
+        }
+      }
     } catch (error) {
       setNotice({ tone: "err", text: error instanceof Error ? error.message : "Import failed" });
     }
   }
 
-  async function onLoad(id: string) {
+  async function onLoad(id: string): Promise<PipelineDocument | null> {
     try {
       const doc = await fetchPipeline(id);
       pinnedId.current = null;
@@ -322,8 +367,10 @@ function Editor() {
       setEdges(doc.edges.map((edge) => toFlowEdge(edge)));
       setSelectedId(null);
       window.setTimeout(() => fitView({ padding: 0.2 }), 0);
+      return doc;
     } catch (error) {
       setNotice({ tone: "err", text: error instanceof Error ? error.message : "Load failed" });
+      return null;
     }
   }
 
@@ -347,7 +394,12 @@ function Editor() {
     setEdges((current) => current.map((edge) => (edge.animated ? { ...edge, animated: false } : edge)));
     const doc = pipelineDocument();
     void startRun(doc)
-      .then(({ id }) => {
+      .then(({ id, warnings }) => {
+        if (warnings && warnings.length > 0) {
+          const shown = warnings.slice(0, 3).join(", ");
+          const rest = warnings.length > 3 ? ` and ${warnings.length - 3} more` : "";
+          setNotice({ tone: "err", text: `Running without: ${shown}${rest}` });
+        }
         setRunId(id);
         openRunStream(id, streamDeps());
       })
@@ -405,6 +457,7 @@ function Editor() {
     <PatchContext.Provider value={patchNode}>
       <RunContext.Provider value={runActions}>
       <ModelsContext.Provider value={models}>
+      <HealthContext.Provider value={health}>
         <div className="flex h-screen flex-col bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100">
           <TopBar
             name={name}
@@ -426,6 +479,8 @@ function Editor() {
               setTheme(next);
             }}
             onOpenLibrary={() => setLibraryOpen(true)}
+            onOpenDependencies={() => setDependenciesOpen(true)}
+            problemCount={health?.problemCount ?? 0}
             onOpenSettings={() => setSettingsOpen(true)}
             workspaceName={workspaceFolderName(workspace.path)}
             workspaceValid={workspace.valid}
@@ -481,7 +536,13 @@ function Editor() {
           onKeySaved={loadModels}
           onWorkspaceChanged={onWorkspaceChanged}
         />
-        <LibraryModal open={libraryOpen} onClose={() => setLibraryOpen(false)} />
+        <LibraryModal
+          open={libraryOpen}
+          onClose={() => {
+            setLibraryOpen(false);
+            setHealthEpoch((value) => value + 1);
+          }}
+        />
         <ExportModal open={exportOpen} busy={exportBusy} onClose={() => setExportOpen(false)} onExport={(includeFiles) => void onExport(includeFiles)} />
         <WarningsModal
           open={warningsOpen}
@@ -490,6 +551,17 @@ function Editor() {
           warnings={warningLines}
           onClose={() => setWarningsOpen(false)}
         />
+        <DependenciesModal
+          open={dependenciesOpen}
+          onClose={() => setDependenciesOpen(false)}
+          health={workspaceReady ? health : null}
+          nodes={nodes}
+          onOpenLibrary={() => {
+            setDependenciesOpen(false);
+            setLibraryOpen(true);
+          }}
+        />
+      </HealthContext.Provider>
       </ModelsContext.Provider>
       </RunContext.Provider>
     </PatchContext.Provider>

@@ -6,6 +6,7 @@
 import { useContext } from "react";
 import type { FlowNode } from "./flow";
 import { AgentFields } from "./AgentNode";
+import { HealthContext } from "./healthContext";
 import { HumanFields } from "./HumanNode";
 import { ModelsContext } from "./modelsContext";
 import { usePatchNode } from "./patch";
@@ -33,8 +34,9 @@ export function Inspector({ node, onClose }: { node: FlowNode; onClose: () => vo
 function InspectorBody({ node }: { node: FlowNode }) {
   const patch = usePatchNode(node.id);
   const models = useContext(ModelsContext);
+  const health = useContext(HealthContext)?.agents[node.id];
   if (node.type === "agent") {
-    return <AgentFields data={node.data} models={models} onChange={(next) => patch(next)} />;
+    return <AgentFields data={node.data} models={models} health={health} onChange={(next) => patch(next)} />;
   }
   return <HumanFields data={node.data} />;
 }

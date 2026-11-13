@@ -66,6 +66,12 @@ Import is in the top bar, beside Export. It opens a native file dialog for a `.s
 
 A missing skill, rule, agent, or MCP server does not fail the import. The workflow loads, and a warnings list names what is missing. Import fails when the file is not valid JSON, is not a `.sharlie` package, has no format version, was made by a newer app, or contains a damaged workflow. A file larger than 20 MB is rejected.
 
+## Missing items
+
+A missing agent, model, skill, rule, or MCP server is shown in red. Hover the red name to see what is missing and how to fix it. The Dependencies button in the top bar opens that list. A count on the button means something needs attention. An MCP server that exists but is turned off is shown in amber.
+
+A missing agent blocks Run. A missing skill, rule, or MCP server does not. The run starts, and a notice names what was left out.
+
 ## Tests
 
 ```bash

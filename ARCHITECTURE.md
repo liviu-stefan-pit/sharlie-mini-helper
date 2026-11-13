@@ -32,7 +32,7 @@ On run, enabled skills and rules become a catalog (name, description, file path)
 
 `src/modules/runs/humanGate.ts` is pure. Human nodes have no notes field. `enterHuman` sets `paused` and `humanStatus: "waiting"`. `applyHumanDecision` accepts `approve`, `redo`, or `decline`. Approve advances `stepIndex` and returns effect `resume` (`running`, or `done` past the last step). Decline returns effect `halt` and status `stopped`. Redo returns effect `resend` and increments `retryCounts[agentId]`. The engine then resends that agent file's body on the same runner. A human step with no earlier agent rejects `No upstream agent`.
 
-`server/index.ts` mounts the routes. `server/routes/library.ts` serves the library snapshot, selection, browse, import, forget, and `GET /api/library/body`. List responses never include MCP env or header values. `server/routes/agents.ts` serves `GET /api/agents` and `POST /api/agents/browse`. `server/routes/runs.ts` calls `resolvePipeline(doc)`, builds the catalog from enabled skills and rules, loads enabled MCP configs, and streams SSE from the engine. `GET /api/models` returns `{ configured: false, models: [] }` when `CURSOR_API_KEY` is missing, and only `listModels()` results when the key is set. There is no preset fallback. The model dropdown is empty and disabled until that list is non-empty. `server/routes/files.ts` reads a file inside the workspace and refuses paths outside the workspace, the workspace `.env`, any `.env` or `.env.*` file, and `data/library/mcp.json`. `GET /api/pipelines`, `POST /api/runs`, and `GET /api/files` answer `409` without a workspace. Library bodies go through `GET /api/library/body`. `server/routes/settings.ts` reports and stores the key without returning it. Responses stay `{ configured }`.
+`server/index.ts` mounts the routes. `server/routes/library.ts` serves the library snapshot, selection, browse, import, forget, and `GET /api/library/body`. List responses never include MCP env or header values. `server/routes/agents.ts` serves `GET /api/agents` and `POST /api/agents/browse`. `server/routes/runs.ts` calls `resolvePipeline(doc)`, checks workflow health, builds the catalog from enabled skills and rules plus bundled or matched workflow skills and rules, loads enabled MCP configs, returns `{ id, warnings }`, and streams SSE from the engine. `GET /api/models` returns `{ configured: false, models: [] }` when `CURSOR_API_KEY` is missing, and only `listModels()` results when the key is set. There is no preset fallback. The model dropdown is empty and disabled until that list is non-empty. `server/routes/files.ts` reads a file inside the workspace and refuses paths outside the workspace, the workspace `.env`, any `.env` or `.env.*` file, and `data/library/mcp.json`. `GET /api/pipelines`, `POST /api/runs`, and `GET /api/files` answer `409` without a workspace. Library bodies go through `GET /api/library/body`. `server/routes/settings.ts` reports and stores the key without returning it. Responses stay `{ configured }`.
 
 `src/App.tsx` registers `agent` and `human` in `nodeTypes` and listens to the run stream. Library UI is a top-bar modal (`LibraryModal` in `src/modules/canvas/LibraryModal.tsx`), not a node. An agent card selects a scanned agent or browses for one `.md` file. The file is not copied.
 
@@ -49,6 +49,19 @@ A `.sharlie` file is one JSON package. `format` is `sharlie-workflow` and `forma
 The whole file is limited to 20 MB. One bundled file is limited to 1 MB. One skill folder is limited to 5 MB and 100 files. MCP command, args, url, env, headers, and `CURSOR_API_KEY` are never written into the file.
 
 `src/modules/sharlie/format.ts` defines the shape and the limits. `pack.ts` builds a package. `parse.ts` reads one. `unpack.ts` imports one into a new workflow folder. `POST /api/sharlie/export` writes the file through a native Save dialog. `POST /api/sharlie/import` reads a `.sharlie` file, creates `<workspace>/<id>/`, and extracts bundled skills, rules, and agents into `.sharlie/bundle/`. A missing skill, rule, agent, or MCP server does not fail the import. Import fails only for the hard parse errors: invalid JSON, a file that is not a `.sharlie` package, a missing format version, a newer format version, or a damaged workflow. `dependencies` on a workflow is optional. `parseDependencies` drops bad entries and keeps the first of each kind and name.
+
+## Workflow health
+
+`POST /api/workflow/health` and the start of a run use `checkWorkflowHealth` in `src/modules/workflow/health.ts`. The canvas paints the result. A missing name is red. Hover text says what is missing and how to fix it. `DependenciesModal` lists the same items.
+
+| Thing | Found when | Shown as |
+| --- | --- | --- |
+| Agent file of a node | `agentPath` (resolved against the workflow folder if relative) is an existing `.md` file | Normal. Otherwise the agent name is red with hover text. |
+| Model of a node | `modelId` is in the `/api/models` list | Normal. Otherwise the model is red with hover text. |
+| Skill / rule dependency | Its `bundledPath` file exists, or a library skill/rule with the same title (case-insensitive, trimmed) exists | Normal. Otherwise red. |
+| MCP dependency | A server with the same name exists in `~/.cursor/mcp.json` and is enabled in the Library | Normal. Exists but disabled: amber. Not found: red. |
+
+A missing agent blocks Run with a clear `400` message. Missing skills, rules, and MCP servers do not block Run. The run starts without them and the UI shows a warning. Resolved skills and rules are merged into the catalog. An MCP server is never enabled because a workflow lists it.
 
 ## SSE events
 

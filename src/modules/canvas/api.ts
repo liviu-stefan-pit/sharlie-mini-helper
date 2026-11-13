@@ -1,10 +1,11 @@
 /**
  * Responsibility: browser calls to the local /api server.
  * Inputs: pipeline documents, pipeline ids, an API key string, and library payloads.
- * Outputs: pipeline summaries, saved documents, settings status, workspace status, models, run ids, and library snapshots.
+ * Outputs: pipeline summaries, saved documents, settings status, workspace status, models, run ids, workflow health, and library snapshots.
  */
 import type { PipelineDocument, PipelineSummary } from "../graph/types";
 import type { LibraryRule, LibrarySkill, LibrarySnapshot, Selection } from "../library/types";
+import type { WorkflowHealth } from "../workflow/health";
 
 export async function fetchPipelines(): Promise<PipelineSummary[]> {
   const body = await requestJson<{ pipelines: PipelineSummary[] }>("/api/pipelines");
@@ -35,8 +36,16 @@ export async function fetchModels(): Promise<{
   return requestJson<{ configured: boolean; models: { id: string; label: string }[]; error?: string }>("/api/models");
 }
 
-export async function startRun(doc: PipelineDocument): Promise<{ id: string }> {
-  return requestJson<{ id: string }>("/api/runs", {
+export async function startRun(doc: PipelineDocument): Promise<{ id: string; warnings?: string[] }> {
+  return requestJson<{ id: string; warnings?: string[] }>("/api/runs", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(doc),
+  });
+}
+
+export async function fetchWorkflowHealth(doc: PipelineDocument): Promise<WorkflowHealth> {
+  return requestJson<WorkflowHealth>("/api/workflow/health", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(doc),
