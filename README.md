@@ -54,6 +54,12 @@ Artifact paths on the human card can be copied and previewed. Preview reads the 
 
 The token pill is reported usage only. It shows the current run total and the process session total from usage events. It does not estimate cost.
 
+## Export
+
+Export is in the top bar. It saves the current workflow, then opens a native Save dialog with `<workflow name>.sharlie` filled in. `POST /api/sharlie/export` writes the file.
+
+The export can include skill, rule, and agent files. MCP servers are stored as names only. A `.sharlie` file does not contain MCP command, args, url, env, headers, or `CURSOR_API_KEY`.
+
 ## Tests
 
 ```bash

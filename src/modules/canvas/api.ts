@@ -86,6 +86,17 @@ export async function browseWorkspace(): Promise<{ cancelled: true } | { path: s
   return requestJson<{ cancelled: true } | { path: string }>("/api/workspace/browse", { method: "POST" });
 }
 
+export async function exportWorkflow(
+  id: string,
+  includeFiles: boolean,
+): Promise<{ cancelled: true } | { path: string; bytes: number; warnings: string[] }> {
+  return requestJson<{ cancelled: true } | { path: string; bytes: number; warnings: string[] }>("/api/sharlie/export", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ id, includeFiles }),
+  });
+}
+
 export async function saveWorkspace(path: string | null): Promise<WorkspaceStatus> {
   return requestJson<WorkspaceStatus>("/api/workspace", {
     method: "PUT",

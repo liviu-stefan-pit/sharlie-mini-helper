@@ -1,7 +1,7 @@
 /**
  * Responsibility: slim command row for the canvas.
  * Inputs: pipeline name, saved pipelines, workspace status, theme, and actions.
- * Outputs: add, save, load, run, theme, library, and settings controls.
+ * Outputs: add, save, load, export, run, theme, library, and settings controls.
  */
 import type { NodeKind, PipelineSummary } from "../graph/types";
 import type { Theme } from "./theme";
@@ -16,6 +16,8 @@ export function TopBar({
   pipelines,
   currentId,
   onLoad,
+  onExport,
+  canExport,
   theme,
   onToggleTheme,
   onOpenLibrary,
@@ -39,6 +41,8 @@ export function TopBar({
   pipelines: PipelineSummary[];
   currentId: string | null;
   onLoad: (id: string) => void;
+  onExport: () => void;
+  canExport: boolean;
   theme: Theme;
   onToggleTheme: () => void;
   onOpenLibrary: () => void;
@@ -110,6 +114,9 @@ export function TopBar({
           ))}
         </select>
       </label>
+      <button type="button" className={ghostButtonClass} onClick={onExport} disabled={!canExport}>
+        Export
+      </button>
       <button
         type="button"
         className={ghostButtonClass}

@@ -17,8 +17,9 @@ import {
   type Connection,
   type Edge,
 } from "@xyflow/react";
-import type { AgentStatus, HumanStatus, NodeKind, PipelineDocument, PipelineSummary } from "./modules/graph/types";
+import type { AgentStatus, HumanStatus, NodeKind, PipelineDocument, PipelineSummary, WorkflowDependency } from "./modules/graph/types";
 import {
+  exportWorkflow,
   fetchModels,
   fetchPipeline,
   fetchPipelines,
@@ -45,9 +46,11 @@ import { Inspector } from "./modules/canvas/Inspector";
 import { ModelsContext, type ModelChoice } from "./modules/canvas/modelsContext";
 import { PatchContext } from "./modules/canvas/patch";
 import { RunContext, type ReviewDecision } from "./modules/canvas/runContext";
+import { ExportModal } from "./modules/canvas/ExportModal";
 import { LibraryModal } from "./modules/canvas/LibraryModal";
 import { SettingsModal } from "./modules/canvas/SettingsModal";
 import { TopBar } from "./modules/canvas/TopBar";
+import { WarningsModal } from "./modules/canvas/WarningsModal";
 import { applyTheme, readTheme, type Theme } from "./modules/canvas/theme";
 
 const nodeTypes = {
@@ -67,6 +70,7 @@ function Editor() {
   const [nodes, setNodes, onNodesChange] = useNodesState<FlowNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<FlowEdge>([]);
   const [name, setName] = useState("Untitled");
+  const [dependencies, setDependencies] = useState<WorkflowDependency[]>([]);
   const [currentId, setCurrentId] = useState<string | null>(null);
   const [pipelines, setPipelines] = useState<PipelineSummary[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -81,7 +85,12 @@ function Editor() {
   const [previewFile, setPreviewFile] = useState<string | null>(null);
   const [tokenPill, setTokenPill] = useState({ run: 0, session: 0 });
   const [workspace, setWorkspace] = useState<WorkspaceStatus>({ path: null, valid: false });
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exportBusy, setExportBusy] = useState(false);
+  const [warningsOpen, setWarningsOpen] = useState(false);
+  const [warningLines, setWarningLines] = useState<string[]>([]);
   const workspaceReady = workspace.valid;
+  const canExport = workspaceReady && runPhase === "idle";
   const spawn = useRef(0);
   const pinnedId = useRef<string | null>(null);
   const sourceRef = useRef<EventSource | null>(null);
@@ -208,6 +217,7 @@ function Editor() {
     pinnedId.current = null;
     setCurrentId(null);
     setName("Untitled");
+    setDependencies([]);
     setNodes([]);
     setEdges([]);
     setSelectedId(null);
@@ -232,10 +242,11 @@ function Editor() {
       nodes: nodes.map((node) => toPipelineNode(node)),
       edges: edges.map((edge) => toPipelineEdge(edge)),
       updatedAt: new Date().toISOString(),
+      dependencies,
     };
   }
 
-  async function onSave() {
+  async function onSave(): Promise<string | null> {
     setSaving(true);
     const doc = pipelineDocument();
     try {
@@ -244,10 +255,33 @@ function Editor() {
       setName(saved.name);
       setPipelines(await fetchPipelines());
       setNotice({ tone: "ok", text: "Saved" });
+      return saved.id;
     } catch (error) {
       setNotice({ tone: "err", text: error instanceof Error ? error.message : "Save failed" });
+      return null;
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function onExport(includeFiles: boolean) {
+    setExportBusy(true);
+    try {
+      const savedId = await onSave();
+      if (!savedId) return;
+      const result = await exportWorkflow(savedId, includeFiles);
+      if ("cancelled" in result) return;
+      const fileName = result.path.split(/[/\\]/).filter(Boolean).pop() ?? result.path;
+      setNotice({ tone: "ok", text: `Exported to ${fileName}` });
+      if (result.warnings.length > 0) {
+        setWarningLines(result.warnings);
+        setWarningsOpen(true);
+      }
+    } catch (error) {
+      setNotice({ tone: "err", text: error instanceof Error ? error.message : "Export failed" });
+    } finally {
+      setExportBusy(false);
+      setExportOpen(false);
     }
   }
 
@@ -257,6 +291,7 @@ function Editor() {
       pinnedId.current = null;
       setCurrentId(doc.id);
       setName(doc.name);
+      setDependencies(doc.dependencies ?? []);
       setNodes(doc.nodes.map((node) => toFlowNode(node)));
       setEdges(doc.edges.map((edge) => toFlowEdge(edge)));
       setSelectedId(null);
@@ -354,6 +389,8 @@ function Editor() {
             pipelines={pipelines}
             currentId={currentId}
             onLoad={(id) => void onLoad(id)}
+            onExport={() => setExportOpen(true)}
+            canExport={canExport}
             theme={theme}
             onToggleTheme={() => {
               const next = theme === "dark" ? "light" : "dark";
@@ -417,6 +454,8 @@ function Editor() {
           onWorkspaceChanged={onWorkspaceChanged}
         />
         <LibraryModal open={libraryOpen} onClose={() => setLibraryOpen(false)} />
+        <ExportModal open={exportOpen} busy={exportBusy} onClose={() => setExportOpen(false)} onExport={(includeFiles) => void onExport(includeFiles)} />
+        <WarningsModal open={warningsOpen} title="Exported with warnings" warnings={warningLines} onClose={() => setWarningsOpen(false)} />
       </ModelsContext.Provider>
       </RunContext.Provider>
     </PatchContext.Provider>

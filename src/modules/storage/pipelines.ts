@@ -15,6 +15,7 @@ import type {
   PipelineEdge,
   PipelineNode,
   PipelineSummary,
+  WorkflowDependency,
 } from "../graph/types";
 
 const ID_PATTERN = /^[a-zA-Z0-9_-]{1,80}$/;
@@ -122,6 +123,47 @@ export async function writePipeline(workspace: string, input: unknown, id: strin
   return next;
 }
 
+export function isSafeRelativePath(value: string): boolean {
+  if (value.length === 0 || value.length > 240) return false;
+  if (value.includes("\0") || value.includes("\\")) return false;
+  if (value.startsWith("/")) return false;
+  if (/^[a-zA-Z]:/.test(value)) return false;
+  for (const segment of value.split("/")) {
+    if (segment === "" || segment === "." || segment === "..") return false;
+  }
+  return true;
+}
+
+export function parseDependencies(value: unknown): WorkflowDependency[] {
+  if (!Array.isArray(value)) return [];
+  const dependencies: WorkflowDependency[] = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    if (!isRecord(entry)) continue;
+    if (entry.kind !== "skill" && entry.kind !== "rule" && entry.kind !== "mcp") continue;
+    if (typeof entry.name !== "string") continue;
+    const name = entry.name.trim();
+    if (name === "") continue;
+    const key = `${entry.kind}\0${name.toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const dependency: WorkflowDependency = {
+      kind: entry.kind,
+      name,
+      description: typeof entry.description === "string" ? entry.description : "",
+    };
+    if (
+      entry.kind !== "mcp" &&
+      typeof entry.bundledPath === "string" &&
+      isSafeRelativePath(entry.bundledPath)
+    ) {
+      dependency.bundledPath = entry.bundledPath;
+    }
+    dependencies.push(dependency);
+  }
+  return dependencies;
+}
+
 export function normalizePipeline(input: unknown, id: string): PipelineDocument {
   if (!isSafePipelineId(id)) {
     throw new PipelineValidationError("Invalid pipeline id");
@@ -147,7 +189,7 @@ export function normalizePipeline(input: unknown, id: string): PipelineDocument 
     .map((edge, index) => parseEdge(edge, index))
     .filter((edge): edge is PipelineEdge => edge !== null)
     .filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target));
-  return {
+  const doc: PipelineDocument = {
     version: 1,
     id,
     name,
@@ -155,6 +197,10 @@ export function normalizePipeline(input: unknown, id: string): PipelineDocument 
     edges,
     updatedAt: typeof input.updatedAt === "string" ? input.updatedAt : new Date().toISOString(),
   };
+  if (input.dependencies !== undefined) {
+    doc.dependencies = parseDependencies(input.dependencies);
+  }
+  return doc;
 }
 
 function parseNode(value: unknown, index: number): PipelineNode | null {

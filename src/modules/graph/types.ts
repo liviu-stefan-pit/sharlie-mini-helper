@@ -1,7 +1,7 @@
 /**
  * Responsibility: serializable pipeline shapes shared by the canvas and the API.
  * Inputs: none (type definitions only).
- * Outputs: node kinds, node data, PipelineNode, PipelineEdge, and PipelineDocument.
+ * Outputs: node kinds, node data, workflow dependencies, PipelineNode, PipelineEdge, and PipelineDocument.
  */
 
 export type NodeKind = "agent" | "human";
@@ -46,6 +46,21 @@ export type PipelineEdge = {
   kind: "execution";
 };
 
+export type DependencyKind = "skill" | "rule" | "mcp";
+
+export type WorkflowDependency = {
+  kind: DependencyKind;
+  /** Skill or rule title, or MCP server name. Never empty. */
+  name: string;
+  /** May be "". */
+  description: string;
+  /**
+   * Only for skill and rule. Posix path relative to the workflow folder, e.g.
+   * ".sharlie/bundle/skills/code-review/SKILL.md". Absent when the file was not bundled.
+   */
+  bundledPath?: string;
+};
+
 export type PipelineDocument = {
   version: 1;
   id: string;
@@ -53,6 +68,7 @@ export type PipelineDocument = {
   nodes: PipelineNode[];
   edges: PipelineEdge[];
   updatedAt: string;
+  dependencies?: WorkflowDependency[];
 };
 
 export type PipelineSummary = {

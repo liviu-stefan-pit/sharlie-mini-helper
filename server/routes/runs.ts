@@ -16,7 +16,7 @@ import {
   scanLibrary,
 } from "../../src/modules/library";
 import { decideRun, runExists, startRun, subscribeRun, type RunStreamEvent } from "../../src/modules/runs/engine";
-import { isSafePipelineId, workflowDir } from "../../src/modules/storage/pipelines";
+import { isSafePipelineId, parseDependencies, workflowDir } from "../../src/modules/storage/pipelines";
 import { readJson, sendJson } from "../http";
 import { loadEnv } from "../loadEnv";
 import type { RouteContext } from "./context";
@@ -219,7 +219,7 @@ function coercePipeline(input: unknown): PipelineDocument {
   if (!Array.isArray(input.nodes) || !Array.isArray(input.edges)) {
     throw new GraphError("Pipeline nodes and edges must be arrays");
   }
-  return {
+  const doc: PipelineDocument = {
     version: 1,
     id: typeof input.id === "string" && input.id.trim() ? input.id : "pipeline",
     name: typeof input.name === "string" && input.name.trim() ? input.name.trim() : "Untitled",
@@ -227,6 +227,10 @@ function coercePipeline(input: unknown): PipelineDocument {
     edges: input.edges.map((edge, index) => coerceEdge(edge, index)),
     updatedAt: typeof input.updatedAt === "string" ? input.updatedAt : new Date().toISOString(),
   };
+  if (input.dependencies !== undefined) {
+    doc.dependencies = parseDependencies(input.dependencies);
+  }
+  return doc;
 }
 
 function coerceNode(value: unknown, index: number): PipelineNode {

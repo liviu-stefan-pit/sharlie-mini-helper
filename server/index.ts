@@ -1,5 +1,5 @@
 /**
- * Responsibility: local JSON API for the library, skills, pipelines, settings, runs, and models.
+ * Responsibility: local JSON API for the library, skills, pipelines, settings, runs, models, and sharlie export.
  * Inputs: HTTP requests on 127.0.0.1:8787 and the workspace .env file.
  * Outputs: JSON responses, including workspace file previews. The process listens until stopped.
  */
@@ -15,6 +15,7 @@ import { handleLibrary } from "./routes/library";
 import { handlePipelines } from "./routes/pipelines";
 import { handleModels, handleRuns } from "./routes/runs";
 import { handleSettings } from "./routes/settings";
+import { handleSharlie } from "./routes/sharlie";
 import { handleSkills } from "./routes/skills";
 import { handleWorkspace } from "./routes/workspace";
 
@@ -48,6 +49,7 @@ async function handleRequest(req: import("node:http").IncomingMessage, res: impo
   if (await handleSkills(ctx)) return;
   if (await handleWorkspace(ctx)) return;
   if (await handleSettings(ctx)) return;
+  if (await handleSharlie(ctx)) return;
   if (await handlePipelines(ctx)) return;
   if (await handleModels(ctx)) return;
   if (await handleFiles(ctx)) return;

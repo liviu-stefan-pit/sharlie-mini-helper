@@ -42,6 +42,14 @@ The workspace is a folder the user picks in Settings. It is stored in `data/app/
 
 `validateWorkspacePath` checks, in order: the path is a non-empty string; it is absolute; `realpath` succeeds; it is a directory; it is not a drive root; it is not the app folder, inside the app folder, or a parent of the app folder; and the folder is writable. The write check creates `.sharlie-write-test` and deletes it. A stored folder that fails those checks stays invalid until the user picks another one.
 
+## .sharlie format
+
+A `.sharlie` file is one JSON package. `format` is `sharlie-workflow` and `formatVersion` is `1`. `workflow` is a version 1 pipeline with run state reset, empty agent paths, and no `dependencies` field. `nodeAgents` maps an agent node id to an item ref. `items` are skills, rules, and agents. An item's `files` is null when the file was not bundled. `mcps` is `{ name }` only.
+
+The whole file is limited to 20 MB. One bundled file is limited to 1 MB. One skill folder is limited to 5 MB and 100 files. MCP command, args, url, env, headers, and `CURSOR_API_KEY` are never written into the file.
+
+`src/modules/sharlie/format.ts` defines the shape and the limits. `pack.ts` builds a package. `parse.ts` reads one. `POST /api/sharlie/export` writes the file through a native Save dialog. `dependencies` on a workflow is optional. `parseDependencies` drops bad entries and keeps the first of each kind and name.
+
 ## SSE events
 
 `GET /api/runs/:id/events` writes these event names: `node-status`, `token`, `assistant`, `artifact`, `paused`, `done`, `error`, `stopped`.

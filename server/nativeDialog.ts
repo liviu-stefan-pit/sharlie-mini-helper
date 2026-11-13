@@ -1,6 +1,6 @@
 /**
  * Responsibility: open a native Windows folder or file dialog.
- * Inputs: dialog kind (skill, rule, agent, workspace). The PowerShell script is static for that kind.
+ * Inputs: dialog kind (skill, rule, agent, workspace, sharlie-save). The PowerShell script is static for that kind.
  * Outputs: the chosen path, or cancelled when the user closes the dialog. No file is copied.
  */
 import { spawn } from "node:child_process";
@@ -126,22 +126,66 @@ const WORKSPACE_SCRIPT = [
   "}",
 ].join("\n");
 
+const SHARLIE_SAVE_SCRIPT = [
+  SCRIPT_SETUP,
+  "$dialog = New-Object System.Windows.Forms.SaveFileDialog",
+  "$dialog.Title = 'Export workflow'",
+  "$dialog.Filter = 'Sharlie workflow (*.sharlie)|*.sharlie'",
+  "$dialog.DefaultExt = 'sharlie'",
+  "$dialog.AddExtension = $true",
+  "$dialog.OverwritePrompt = $true",
+  "$dialog.FileName = $env:SHARLIE_DEFAULT_NAME",
+  "$chosen = $null",
+  "try {",
+  "  $owner.Show()",
+  "  $owner.TopMost = $true",
+  "  [void]$owner.Activate()",
+  "  $result = $dialog.ShowDialog($owner)",
+  "  if ($result -eq [System.Windows.Forms.DialogResult]::OK) {",
+  "    $chosen = $dialog.FileName",
+  "  }",
+  "} finally {",
+  "  $dialog.Dispose()",
+  "  $owner.Dispose()",
+  "}",
+  "if ($null -ne $chosen -and \"$chosen\" -ne '') {",
+  "  [Console]::Out.WriteLine($chosen)",
+  "}",
+].join("\n");
+
 const DIALOG_SCRIPTS = {
   skill: SKILL_SCRIPT,
   rule: RULE_SCRIPT,
   agent: AGENT_SCRIPT,
   workspace: WORKSPACE_SCRIPT,
+  "sharlie-save": SHARLIE_SAVE_SCRIPT,
 } as const;
 
-export function openNativeDialog(kind: keyof typeof DIALOG_SCRIPTS): Promise<NativeDialogPick> {
+export function openNativeDialog(
+  kind: keyof typeof DIALOG_SCRIPTS,
+  options?: { defaultFileName?: string },
+): Promise<NativeDialogPick> {
+  if (kind === "sharlie-save") {
+    return runStaticScript(DIALOG_SCRIPTS[kind], {
+      SHARLIE_DEFAULT_NAME: sharlieDefaultName(options?.defaultFileName),
+    });
+  }
   return runStaticScript(DIALOG_SCRIPTS[kind]);
 }
 
-function runStaticScript(script: string): Promise<NativeDialogPick> {
+function sharlieDefaultName(value: string | undefined): string {
+  const stripped = (value ?? "").replace(/[<>:"/\\|?*\u0000-\u001F\u007F-\u009F]/g, "");
+  const cut = stripped.trim().slice(0, 100);
+  const base = cut === "" ? "workflow" : cut;
+  return base.endsWith(".sharlie") ? base : `${base}.sharlie`;
+}
+
+function runStaticScript(script: string, env?: Record<string, string>): Promise<NativeDialogPick> {
   return new Promise((resolve, reject) => {
     const child = spawn("powershell.exe", ["-NoProfile", "-STA", "-Command", script], {
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],
+      env: env ? { ...process.env, ...env } : undefined,
     });
     const stdout: Buffer[] = [];
     let size = 0;
