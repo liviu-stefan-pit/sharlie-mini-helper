@@ -8,6 +8,7 @@ import { SharlieFormatError } from "../src/modules/sharlie/format";
 import { LIMITS } from "../src/modules/sharlie/format";
 import { buildSharliePackage, readBundleFiles } from "../src/modules/sharlie/pack";
 import { parseSharliePackage } from "../src/modules/sharlie/parse";
+import { samePath } from "../src/modules/library/paths";
 import { normalizePipeline, parseDependencies, readPipeline, writePipeline } from "../src/modules/storage/pipelines";
 import { isSafeRelativePath } from "../src/modules/storage/pipelines";
 
@@ -63,6 +64,76 @@ describe("sharlie format", () => {
       assert.equal(packed.includes("keep-environment"), true);
     } finally {
       await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("readBundleFiles skips .ENV on Windows", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "sharlie-env-case-"));
+    try {
+      await fs.writeFile(path.join(root, ".ENV"), "SECRET_ENV_CASE\n", "utf8");
+      await fs.writeFile(path.join(root, "keep.txt"), "keep", "utf8");
+      const result = await readBundleFiles(root, {
+        maxFiles: LIMITS.maxSkillFiles,
+        maxTotalBytes: LIMITS.maxSkillBytes,
+        maxFileBytes: LIMITS.maxFileBytes,
+      });
+      const packed = JSON.stringify(result.files);
+      if (process.platform === "win32") {
+        assert.equal(
+          result.files.some((file) => file.path.toLowerCase() === ".env"),
+          false,
+        );
+        assert.equal(packed.includes("SECRET_ENV_CASE"), false);
+      } else {
+        assert.ok(result.files.some((file) => file.path === ".ENV"));
+      }
+      assert.equal(packed.includes("keep"), true);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a skill keeps other files when the entry casing differs", async (t) => {
+    if (process.platform !== "win32") {
+      t.skip("the catalog path and the directory name differ only by case");
+      return;
+    }
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "sharlie-skill-case-"));
+    try {
+      const skillDir = path.join(dir, "skill");
+      await fs.mkdir(path.join(skillDir, "scripts"), { recursive: true });
+      await fs.writeFile(path.join(skillDir, "skill.md"), "# Skill\n", "utf8");
+      await fs.writeFile(path.join(skillDir, "scripts", "run.py"), "print('run')\n", "utf8");
+      const doc: PipelineDocument = {
+        version: 1,
+        id: "demo-1",
+        name: "Demo",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        nodes: [],
+        edges: [],
+      };
+      const { pkg, warnings } = await buildSharliePackage({
+        doc,
+        workflowDir: dir,
+        enabledSkills: [
+          { title: "Code Review", description: "Reviews code", path: path.join(skillDir, "SKILL.md") },
+        ],
+        enabledRules: [],
+        enabledMcpNames: [],
+        includeFiles: true,
+        appVersion: "9.9.9",
+      });
+      const skill = pkg.items.find((item) => item.kind === "skill");
+      assert.ok(skill?.files);
+      assert.equal(skill.entry, "SKILL.md");
+      assert.ok(skill.files.some((file) => samePath(file.path, skill.entry)));
+      assert.ok(skill.files.some((file) => file.path === "scripts/run.py"));
+      assert.equal(
+        warnings.some((warning) => warning.includes("too large")),
+        false,
+      );
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
     }
   });
 

@@ -13,6 +13,10 @@ import { LIMITS, SHARLIE_FORMAT, SHARLIE_FORMAT_VERSION, type SharlieFile, type 
 
 const SKIP_DIRS = new Set(["node_modules", ".git", "dist", ".sharlie"]);
 
+function foldName(name: string): string {
+  return process.platform === "win32" ? name.toLowerCase() : name;
+}
+
 type NamedFile = { name: string; description: string; path?: string };
 
 export async function readBundleFiles(
@@ -36,12 +40,13 @@ export async function readBundleFiles(
       if (entry.isSymbolicLink()) continue;
       const full = path.join(current, entry.name);
       if (entry.isDirectory()) {
-        if (SKIP_DIRS.has(entry.name)) continue;
+        if (SKIP_DIRS.has(foldName(entry.name))) continue;
         stack.push(full);
         continue;
       }
       if (!entry.isFile()) continue;
-      if (entry.name === ".env" || entry.name.startsWith(".env.")) continue;
+      const foldedName = foldName(entry.name);
+      if (foldedName === ".env" || foldedName.startsWith(".env.")) continue;
       const rel = path.relative(rootDir, full).split(path.sep).join("/");
       let size = 0;
       try {
@@ -257,7 +262,7 @@ async function packSkill(skill: NamedFile, index: number, includeFiles: boolean,
       maxFileBytes: LIMITS.maxFileBytes,
     });
     warnings.push(...bundled.warnings);
-    if (!bundled.files.some((file) => file.path === entry)) {
+    if (!bundled.files.some((file) => samePath(file.path, entry))) {
       const main = await readEncodedFile(filePath, entry);
       if (main) {
         files = [main];
