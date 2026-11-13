@@ -11,9 +11,14 @@ export function libraryRoot(workspaceRoot: string): string {
   return path.join(workspaceRoot, "data", "library");
 }
 
+/** A segment that is exactly ".." leaves the root. A name such as "..secret" does not. */
+export function hasParentSegment(relative: string): boolean {
+  return relative.split(/[/\\]/).includes("..");
+}
+
 export function isInside(root: string, candidate: string): boolean {
   const rel = path.relative(root, candidate);
-  return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
+  return rel !== "" && !hasParentSegment(rel) && !path.isAbsolute(rel);
 }
 
 export function toPosixRelative(root: string, file: string): string {

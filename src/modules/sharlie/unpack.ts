@@ -7,6 +7,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { AgentFile } from "../agents/agentFile";
 import type { PipelineDocument, WorkflowDependency } from "../graph/types";
+import { hasParentSegment } from "../library/paths";
 import { isSafeRelativePath, workflowDir, writePipeline } from "../storage/pipelines";
 import { SharlieFormatError, type SharlieItem, type SharliePackage } from "./format";
 
@@ -107,7 +108,7 @@ async function extractItem(workflowDirectory: string, item: SharlieItem): Promis
     if (!isSafeRelativePath(file.path)) throw new Error("unsafe relative path");
     const target = path.join(itemDir, ...file.path.split("/"));
     const relative = path.relative(itemDir, target);
-    if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error("path escapes the item folder");
+    if (hasParentSegment(relative) || path.isAbsolute(relative)) throw new Error("path escapes the item folder");
     await fs.mkdir(path.dirname(target), { recursive: true });
     if (file.encoding === "utf8") {
       await fs.writeFile(target, file.content, { encoding: "utf8", flag: "wx" });
@@ -155,7 +156,7 @@ function assertDirectChild(kindRoot: string, slug: string): void {
   if (slug === "" || slug.includes("/") || slug.includes("\\")) throw new Error("unsafe slug");
   const itemDir = path.join(kindRoot, slug);
   const relative = path.relative(kindRoot, itemDir);
-  if (relative === "" || relative.startsWith("..") || path.isAbsolute(relative) || relative.includes(path.sep)) {
+  if (relative === "" || hasParentSegment(relative) || path.isAbsolute(relative) || relative.includes(path.sep)) {
     throw new Error("unsafe slug");
   }
 }

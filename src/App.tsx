@@ -231,7 +231,9 @@ function Editor() {
   );
 
   function onWorkspaceChanged(status: WorkspaceStatus) {
+    const unchanged = status.path === workspace.path && status.valid === workspace.valid;
     setWorkspace(status);
+    if (unchanged && status.path !== null) return;
     pinnedId.current = null;
     setCurrentId(null);
     setName("Untitled");
@@ -393,8 +395,10 @@ function Editor() {
     );
     setEdges((current) => current.map((edge) => (edge.animated ? { ...edge, animated: false } : edge)));
     const doc = pipelineDocument();
+    const generation = generationRef.current;
     void startRun(doc)
       .then(({ id, warnings }) => {
+        if (generationRef.current !== generation) return;
         if (warnings && warnings.length > 0) {
           const shown = warnings.slice(0, 3).join(", ");
           const rest = warnings.length > 3 ? ` and ${warnings.length - 3} more` : "";
@@ -404,6 +408,7 @@ function Editor() {
         openRunStream(id, streamDeps());
       })
       .catch((error: unknown) => {
+        if (generationRef.current !== generation) return;
         setRunPhase("idle");
         setNotice({ tone: "err", text: error instanceof Error ? error.message : "Run failed" });
       });
@@ -426,11 +431,14 @@ function Editor() {
     (decision: ReviewDecision) => {
       if (!runId) return;
       const id = runId;
+      const generation = generationRef.current;
       void postDecision(id, decision)
         .then(() => {
+          if (generationRef.current !== generation) return;
           openRunStream(id, streamDeps());
         })
         .catch((error: unknown) => {
+          if (generationRef.current !== generation) return;
           setNotice({ tone: "err", text: error instanceof Error ? error.message : "Decision failed" });
         });
     },

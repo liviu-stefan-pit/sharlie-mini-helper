@@ -5,6 +5,7 @@
  */
 import fs from "node:fs/promises";
 import path from "node:path";
+import { hasParentSegment } from "../../src/modules/library/paths";
 import { sendJson } from "../http";
 import type { RouteContext } from "./context";
 import { requireWorkspace } from "./workspace";
@@ -105,7 +106,7 @@ function isEnvFileName(name: string): boolean {
 
 function escapes(root: string, candidate: string): boolean {
   const rel = path.relative(root, candidate);
-  return rel.startsWith("..") || path.isAbsolute(rel);
+  return hasParentSegment(rel) || path.isAbsolute(rel);
 }
 
 async function isLibraryMcp(root: string, real: string, relPosix: string): Promise<boolean> {

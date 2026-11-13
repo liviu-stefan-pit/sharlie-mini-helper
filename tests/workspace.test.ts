@@ -82,6 +82,18 @@ describe("workspace settings", () => {
     }
   });
 
+  test("rejects a child folder named ..secret", async () => {
+    const appRoot = await fs.mkdtemp(path.join(os.tmpdir(), "sharlie-workspace-"));
+    try {
+      const secret = path.join(appRoot, "..secret");
+      await fs.mkdir(secret);
+      const message = "The workspace cannot be the app folder, inside it, or contain it";
+      assert.deepEqual(await validateWorkspacePath(secret, appRoot), { ok: false, error: message });
+    } finally {
+      await fs.rm(appRoot, { recursive: true, force: true });
+    }
+  });
+
   test("overlapping checks on one folder both succeed", async () => {
     const appRoot = await fs.mkdtemp(path.join(os.tmpdir(), "sharlie-workspace-app-"));
     const folder = await fs.mkdtemp(path.join(os.tmpdir(), "sharlie-workspace-overlap-"));
