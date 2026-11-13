@@ -1,80 +1,167 @@
 /**
  * Responsibility: agent node card and the fields shared with the inspector.
- * Inputs: agent node data and a patch callback.
- * Outputs: model, prompt, and status controls bound to the node.
+ * Inputs: agent node data, the model list, and a patch callback.
+ * Outputs: model, agent file, status, and live run progress on the card.
  */
+import { useContext, useEffect, useState } from "react";
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
-import { MODEL_PRESETS } from "../cursor/models";
 import type { AgentNodeData } from "../graph/types";
+import { browseAgent, fetchAgents, type AgentChoice } from "./api";
+import { ModelsContext, type ModelChoice } from "./modelsContext";
 import { usePatchNode } from "./patch";
-import { cardClass, fieldClass, labelClass } from "./ui";
+import { cardClass, fieldClass, ghostButtonClass, labelClass } from "./ui";
 
 export function AgentFields({
   data,
+  models,
   onChange,
   compact = false,
 }: {
   data: AgentNodeData;
+  models: readonly ModelChoice[];
   onChange: (patch: Partial<AgentNodeData>) => void;
   compact?: boolean;
 }) {
-  const known =
-    MODEL_PRESETS.some((preset) => preset.id === data.modelId) || data.modelId === "custom";
+  const [agents, setAgents] = useState<AgentChoice[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [browsing, setBrowsing] = useState(false);
+  const modelsReady = models.length > 0;
+  const knownModel = models.some((model) => model.id === data.modelId);
+  const knownAgent = agents.some((agent) => agent.path === data.agentPath);
   const seconds = Math.floor(data.elapsedMs / 1000);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchAgents()
+      .then((list) => {
+        if (!cancelled) setAgents(list);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : "Could not load agents");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function onBrowse() {
+    setBrowsing(true);
+    setError(null);
+    try {
+      const picked = await browseAgent();
+      if ("cancelled" in picked) return;
+      onChange({ agentPath: picked.path, agentName: picked.name });
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Could not open the agent file");
+    } finally {
+      setBrowsing(false);
+    }
+  }
+
   return (
     <div className="flex flex-col gap-2">
       <label className={labelClass}>
         Model
         <select
-          className={`${fieldClass} mt-1`}
+          className={`${fieldClass} mt-1 disabled:cursor-not-allowed disabled:opacity-60`}
           value={data.modelId}
+          disabled={!modelsReady}
           onChange={(event) => onChange({ modelId: event.target.value })}
         >
-          {MODEL_PRESETS.map((preset) => (
-            <option key={preset.id} value={preset.id}>
-              {preset.label}
+          {!modelsReady && <option value={data.modelId}>Connect an API key in Settings</option>}
+          {modelsReady && data.modelId === "" && <option value="">Select a model</option>}
+          {models.map((model) => (
+            <option key={model.id} value={model.id}>
+              {model.label}
             </option>
           ))}
-          {!known && <option value={data.modelId}>{data.modelId}</option>}
-          <option value="custom">Custom</option>
+          {modelsReady && data.modelId !== "" && !knownModel && <option value={data.modelId}>{data.modelId}</option>}
         </select>
       </label>
-      {data.modelId === "custom" && (
-        <label className={labelClass}>
-          Custom model
-          <input
-            className={`${fieldClass} mt-1`}
-            value={data.customModelId ?? ""}
-            placeholder="model id"
-            onChange={(event) => onChange({ customModelId: event.target.value })}
-          />
-        </label>
-      )}
+      {!modelsReady && <p className="text-[11px] text-zinc-500">Connect an API key in Settings</p>}
       <label className={labelClass}>
-        Prompt / role
-        <textarea
-          className={`${fieldClass} mt-1 resize-y`}
-          rows={compact ? 3 : 8}
-          value={data.prompt}
-          placeholder="Prompt / role"
-          onChange={(event) => onChange({ prompt: event.target.value })}
-        />
+        Agent
+        <select
+          className={`${fieldClass} mt-1`}
+          value={data.agentPath}
+          onChange={(event) => {
+            const agentPath = event.target.value;
+            const chosen = agents.find((agent) => agent.path === agentPath);
+            onChange({ agentPath, agentName: chosen?.name ?? "" });
+          }}
+        >
+          <option value="">Select an agent</option>
+          {agents.map((agent) => (
+            <option key={agent.path} value={agent.path}>
+              {agent.name}
+            </option>
+          ))}
+          {!knownAgent && data.agentPath !== "" && (
+            <option value={data.agentPath}>{data.agentName || data.agentPath}</option>
+          )}
+        </select>
       </label>
+      <button
+        type="button"
+        className={`${ghostButtonClass} nodrag nopan nowheel`}
+        disabled={browsing}
+        onClick={(event) => {
+          event.stopPropagation();
+          void onBrowse();
+        }}
+      >
+        Browse
+      </button>
+      {error && <p className="text-[11px] text-red-600">{error}</p>}
       <p className="text-[11px] text-zinc-500">
-        {data.status}, elapsed {seconds}s, tokens {data.tokens.input} / {data.tokens.output} / {data.tokens.total}
+        {data.status}
+        {data.retryCount > 0 ? `, retry ${data.retryCount}` : ""}, elapsed {seconds}s, tokens {shown(data.tokens.input)}{" "}
+        / {shown(data.tokens.output)} / {shown(data.tokens.total)}
       </p>
+      {data.lastOutput && (
+        <p
+          className={`whitespace-pre-wrap text-[11px] text-zinc-600 dark:text-zinc-300 ${compact ? "line-clamp-4" : "max-h-40 overflow-auto"}`}
+        >
+          {data.lastOutput}
+        </p>
+      )}
     </div>
   );
 }
 
 export function AgentNode({ id, data }: NodeProps<Node<AgentNodeData, "agent">>) {
   const patch = usePatchNode(id);
+  const models = useContext(ModelsContext);
   return (
     <div className={cardClass}>
       <Handle type="target" position={Position.Left} className="!h-2 !w-2 !border-zinc-400 !bg-white dark:!bg-zinc-900" />
-      <p className="mb-2 text-[10px] font-medium uppercase tracking-wide text-zinc-400">Agent</p>
-      <AgentFields data={data} compact onChange={(next) => patch(next)} />
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <p className="text-[10px] font-medium uppercase tracking-wide text-zinc-400">Agent</p>
+        <AgentMark status={data.status} />
+      </div>
+      <AgentFields data={data} models={models} compact onChange={(next) => patch(next)} />
       <Handle type="source" position={Position.Right} className="!h-2 !w-2 !border-zinc-400 !bg-white dark:!bg-zinc-900" />
     </div>
   );
+}
+
+function AgentMark({ status }: { status: AgentNodeData["status"] }) {
+  if (status === "running" || status === "redoing") {
+    return <span className="progress-ring" aria-hidden="true" />;
+  }
+  if (status === "done") {
+    return (
+      <svg className="status-check" viewBox="0 0 16 16" aria-label="done">
+        <path d="M3.2 8.4 6.4 11.6 12.8 4.4" fill="none" stroke="currentColor" strokeWidth="2" />
+      </svg>
+    );
+  }
+  if (status === "error") {
+    return <span className="text-[10px] font-medium text-red-600">error</span>;
+  }
+  return null;
+}
+
+function shown(value: number | undefined): string {
+  return typeof value === "number" ? String(value) : "\u2014";
 }

@@ -4,31 +4,24 @@
  * Outputs: node kinds, node data, PipelineNode, PipelineEdge, and PipelineDocument.
  */
 
-export type NodeKind = "agent" | "skill" | "human";
+export type NodeKind = "agent" | "human";
 export type AgentStatus = "idle" | "running" | "redoing" | "done" | "error";
 export type HumanStatus = "idle" | "waiting" | "approved" | "declined";
-export type TokenCounts = { input: number; output: number; total: number };
+export type TokenCounts = { input?: number; output?: number; total?: number };
 
 export type AgentNodeData = {
   modelId: string;
-  customModelId?: string;
-  prompt: string;
+  agentPath: string;
+  agentName: string;
   status: AgentStatus;
   elapsedMs: number;
   retryCount: number;
   tokens: TokenCounts;
-};
-
-export type SkillNodeData = {
-  source: "discovered" | "custom";
-  skillPath: string;
-  title: string;
-  description: string;
+  lastOutput?: string;
 };
 
 export type HumanNodeData = {
   status: HumanStatus;
-  notes: string;
   artifactPaths: string[];
 };
 
@@ -41,12 +34,6 @@ export type PipelineNode =
     }
   | {
       id: string;
-      type: "skill";
-      position: { x: number; y: number };
-      data: SkillNodeData;
-    }
-  | {
-      id: string;
       type: "human";
       position: { x: number; y: number };
       data: HumanNodeData;
@@ -56,7 +43,7 @@ export type PipelineEdge = {
   id: string;
   source: string;
   target: string;
-  kind: "attachment" | "execution";
+  kind: "execution";
 };
 
 export type PipelineDocument = {

@@ -1,6 +1,6 @@
 /**
- * Responsibility: find SKILL.md files under the user and workspace skill folders.
- * Inputs: workspace root directory.
+ * Responsibility: find SKILL.md files under a Cursor home skills folder.
+ * Inputs: cursor home directory. Defaults to the user .cursor directory.
  * Outputs: skills sorted by title, deduplicated by real path.
  */
 import fs from "node:fs/promises";
@@ -8,15 +8,22 @@ import os from "node:os";
 import path from "node:path";
 import { parseSkillMarkdown, type SkillSummary } from "./parseSkill";
 
-export async function scanSkills(workspaceRoot: string): Promise<SkillSummary[]> {
-  const roots = [
-    path.join(os.homedir(), ".cursor", "skills"),
-    path.join(workspaceRoot, ".cursor", "skills"),
-  ];
-  const files: string[] = [];
-  for (const root of roots) {
-    await walk(root, files, new Set());
+export function defaultCursorHome(): string {
+  return path.join(os.homedir(), ".cursor");
+}
+
+export async function scanSkills(cursorHome: string = defaultCursorHome()): Promise<SkillSummary[]> {
+  const root = path.join(cursorHome, "skills");
+  let rootReal: string;
+  try {
+    rootReal = await fs.realpath(root);
+  } catch (error) {
+    if (isSoft(error)) return [];
+    throw error;
   }
+
+  const files: string[] = [];
+  await walk(root, rootReal, files, new Set());
 
   const seen = new Set<string>();
   const skills: SkillSummary[] = [];
@@ -27,12 +34,13 @@ export async function scanSkills(workspaceRoot: string): Promise<SkillSummary[]>
     } catch {
       continue;
     }
-    const key = process.platform === "win32" ? real.toLowerCase() : real;
+    if (!isInside(rootReal, real)) continue;
+    const key = pathKey(real);
     if (seen.has(key)) continue;
     seen.add(key);
     try {
-      const markdown = await fs.readFile(file, "utf8");
-      skills.push(parseSkillMarkdown(markdown, file));
+      const markdown = await fs.readFile(real, "utf8");
+      skills.push(parseSkillMarkdown(markdown, real));
     } catch {
       continue;
     }
@@ -46,15 +54,16 @@ export async function scanSkills(workspaceRoot: string): Promise<SkillSummary[]>
   return skills;
 }
 
-async function walk(dir: string, files: string[], seenDirs: Set<string>): Promise<void> {
+async function walk(dir: string, rootReal: string, files: string[], seenDirs: Set<string>): Promise<void> {
   let realDir: string;
   try {
     realDir = await fs.realpath(dir);
   } catch (error) {
-    if (isMissing(error) || isAccess(error)) return;
+    if (isSoft(error)) return;
     throw error;
   }
-  const dirKey = process.platform === "win32" ? realDir.toLowerCase() : realDir;
+  if (realDir !== rootReal && !isInside(rootReal, realDir)) return;
+  const dirKey = pathKey(realDir);
   if (seenDirs.has(dirKey)) return;
   seenDirs.add(dirKey);
 
@@ -62,7 +71,7 @@ async function walk(dir: string, files: string[], seenDirs: Set<string>): Promis
   try {
     entries = await fs.readdir(dir, { withFileTypes: true });
   } catch (error) {
-    if (isMissing(error) || isAccess(error)) return;
+    if (isSoft(error)) return;
     throw error;
   }
 
@@ -72,22 +81,27 @@ async function walk(dir: string, files: string[], seenDirs: Set<string>): Promis
     try {
       stat = await fs.stat(full);
     } catch (error) {
-      if (isMissing(error) || isAccess(error)) continue;
+      if (isSoft(error)) continue;
       throw error;
     }
     if (stat.isDirectory()) {
-      await walk(full, files, seenDirs);
+      await walk(full, rootReal, files, seenDirs);
     } else if (stat.isFile() && entry.name === "SKILL.md") {
       files.push(full);
     }
   }
 }
 
-function isMissing(error: unknown): boolean {
-  return (error as NodeJS.ErrnoException).code === "ENOENT";
+function isInside(root: string, candidate: string): boolean {
+  const rel = path.relative(root, candidate);
+  return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
 }
 
-function isAccess(error: unknown): boolean {
+function pathKey(file: string): string {
+  return process.platform === "win32" ? file.toLowerCase() : file;
+}
+
+function isSoft(error: unknown): boolean {
   const code = (error as NodeJS.ErrnoException).code;
-  return code === "EACCES" || code === "EPERM";
+  return code === "ENOENT" || code === "EACCES" || code === "EPERM" || code === "ENOTDIR" || code === "ELOOP";
 }

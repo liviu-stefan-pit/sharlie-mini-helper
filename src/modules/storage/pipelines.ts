@@ -14,7 +14,6 @@ import type {
   PipelineEdge,
   PipelineNode,
   PipelineSummary,
-  SkillNodeData,
 } from "../graph/types";
 
 const ID_PATTERN = /^[a-zA-Z0-9_-]{1,80}$/;
@@ -90,7 +89,7 @@ export async function writePipeline(workspaceRoot: string, input: unknown, id: s
   return next;
 }
 
-function normalizePipeline(input: unknown, id: string): PipelineDocument {
+export function normalizePipeline(input: unknown, id: string): PipelineDocument {
   if (!isSafePipelineId(id)) {
     throw new PipelineValidationError("Invalid pipeline id");
   }
@@ -107,27 +106,33 @@ function normalizePipeline(input: unknown, id: string): PipelineDocument {
     throw new PipelineValidationError("Pipeline nodes and edges must be arrays");
   }
   const name = input.name.trim() || "Untitled";
+  const nodes = input.nodes
+    .map((node, index) => parseNode(node, index))
+    .filter((node): node is PipelineNode => node !== null);
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  const edges = input.edges
+    .map((edge, index) => parseEdge(edge, index))
+    .filter((edge): edge is PipelineEdge => edge !== null)
+    .filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target));
   return {
     version: 1,
     id,
     name,
-    nodes: input.nodes.map((node, index) => parseNode(node, index)),
-    edges: input.edges.map((edge, index) => parseEdge(edge, index)),
+    nodes,
+    edges,
     updatedAt: typeof input.updatedAt === "string" ? input.updatedAt : new Date().toISOString(),
   };
 }
 
-function parseNode(value: unknown, index: number): PipelineNode {
+function parseNode(value: unknown, index: number): PipelineNode | null {
   if (!isRecord(value)) {
     throw new PipelineValidationError(`Node ${index} must be an object`);
   }
+  if (value.type === "skill") return null;
   const id = requiredString(value.id, `nodes[${index}].id`);
   const position = parsePosition(value.position, index);
   if (value.type === "agent") {
     return { id, type: "agent", position, data: parseAgentData(value.data, index) };
-  }
-  if (value.type === "skill") {
-    return { id, type: "skill", position, data: parseSkillData(value.data, index) };
   }
   if (value.type === "human") {
     return { id, type: "human", position, data: parseHumanData(value.data, index) };
@@ -135,19 +140,19 @@ function parseNode(value: unknown, index: number): PipelineNode {
   throw new PipelineValidationError(`Node ${index} has an unknown type`);
 }
 
-function parseEdge(value: unknown, index: number): PipelineEdge {
+function parseEdge(value: unknown, index: number): PipelineEdge | null {
   if (!isRecord(value)) {
     throw new PipelineValidationError(`Edge ${index} must be an object`);
   }
-  const kind = value.kind;
-  if (kind !== "attachment" && kind !== "execution") {
-    throw new PipelineValidationError(`Edge ${index} kind must be attachment or execution`);
+  if (value.kind === "attachment") return null;
+  if (value.kind !== "execution") {
+    throw new PipelineValidationError(`Edge ${index} kind must be execution`);
   }
   return {
     id: requiredString(value.id, `edges[${index}].id`),
     source: requiredString(value.source, `edges[${index}].source`),
     target: requiredString(value.target, `edges[${index}].target`),
-    kind,
+    kind: "execution",
   };
 }
 
@@ -168,34 +173,21 @@ function parseAgentData(value: unknown, index: number): AgentNodeData {
   }
   const data: AgentNodeData = {
     modelId: requiredString(value.modelId, `nodes[${index}].modelId`),
-    prompt: requiredString(value.prompt, `nodes[${index}].prompt`),
+    agentPath: missingString(value.agentPath, `nodes[${index}].agentPath`),
+    agentName: missingString(value.agentName, `nodes[${index}].agentName`),
     status: oneOf(value.status, AGENT_STATUSES, `nodes[${index}].status`),
     elapsedMs: requiredNumber(value.elapsedMs, `nodes[${index}].elapsedMs`),
     retryCount: requiredNumber(value.retryCount, `nodes[${index}].retryCount`),
     tokens: {
-      input: requiredNumber(value.tokens.input, `nodes[${index}].tokens.input`),
-      output: requiredNumber(value.tokens.output, `nodes[${index}].tokens.output`),
-      total: requiredNumber(value.tokens.total, `nodes[${index}].tokens.total`),
+      input: optionalNumber(value.tokens.input, `nodes[${index}].tokens.input`),
+      output: optionalNumber(value.tokens.output, `nodes[${index}].tokens.output`),
+      total: optionalNumber(value.tokens.total, `nodes[${index}].tokens.total`),
     },
   };
-  if (value.customModelId !== undefined) {
-    data.customModelId = requiredString(value.customModelId, `nodes[${index}].customModelId`);
+  if (value.lastOutput !== undefined) {
+    data.lastOutput = requiredString(value.lastOutput, `nodes[${index}].lastOutput`);
   }
   return data;
-}
-
-function parseSkillData(value: unknown, index: number): SkillNodeData {
-  if (!isRecord(value)) throw new PipelineValidationError(`Node ${index} data must be an object`);
-  const source = value.source;
-  if (source !== "discovered" && source !== "custom") {
-    throw new PipelineValidationError(`Node ${index} source must be discovered or custom`);
-  }
-  return {
-    source,
-    skillPath: requiredString(value.skillPath, `nodes[${index}].skillPath`),
-    title: requiredString(value.title, `nodes[${index}].title`),
-    description: requiredString(value.description, `nodes[${index}].description`),
-  };
 }
 
 function parseHumanData(value: unknown, index: number): HumanNodeData {
@@ -205,11 +197,15 @@ function parseHumanData(value: unknown, index: number): HumanNodeData {
   }
   return {
     status: oneOf(value.status, HUMAN_STATUSES, `nodes[${index}].status`),
-    notes: requiredString(value.notes, `nodes[${index}].notes`),
     artifactPaths: value.artifactPaths.map((item, pathIndex) =>
       requiredString(item, `nodes[${index}].artifactPaths[${pathIndex}]`),
     ),
   };
+}
+
+function missingString(value: unknown, label: string): string {
+  if (value === undefined) return "";
+  return requiredString(value, label);
 }
 
 function requiredString(value: unknown, label: string): string {
@@ -217,6 +213,11 @@ function requiredString(value: unknown, label: string): string {
     throw new PipelineValidationError(`${label} must be a string`);
   }
   return value;
+}
+
+function optionalNumber(value: unknown, label: string): number | undefined {
+  if (value === undefined) return undefined;
+  return requiredNumber(value, label);
 }
 
 function requiredNumber(value: unknown, label: string): number {

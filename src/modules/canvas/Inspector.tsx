@@ -3,11 +3,12 @@
  * Inputs: the selected flow node and a close action.
  * Outputs: the same fields as the node card, kept in sync.
  */
+import { useContext } from "react";
 import type { FlowNode } from "./flow";
 import { AgentFields } from "./AgentNode";
 import { HumanFields } from "./HumanNode";
+import { ModelsContext } from "./modelsContext";
 import { usePatchNode } from "./patch";
-import { SkillFields } from "./SkillNode";
 
 export function Inspector({ node, onClose }: { node: FlowNode; onClose: () => void }) {
   return (
@@ -31,14 +32,9 @@ export function Inspector({ node, onClose }: { node: FlowNode; onClose: () => vo
 
 function InspectorBody({ node }: { node: FlowNode }) {
   const patch = usePatchNode(node.id);
+  const models = useContext(ModelsContext);
   if (node.type === "agent") {
-    return <AgentFields data={node.data} onChange={(next) => patch(next)} />;
+    return <AgentFields data={node.data} models={models} onChange={(next) => patch(next)} />;
   }
-  if (node.type === "skill") {
-    return <SkillFields data={node.data} onChange={(next) => patch(next)} />;
-  }
-  if (node.type === "human") {
-    return <HumanFields data={node.data} onChange={(next) => patch(next)} />;
-  }
-  return null;
+  return <HumanFields data={node.data} />;
 }

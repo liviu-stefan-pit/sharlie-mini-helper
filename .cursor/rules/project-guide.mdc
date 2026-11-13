@@ -1,0 +1,38 @@
+---
+description: Conventions for editing Sharlie Easy Flow
+alwaysApply: true
+---
+
+# Sharlie Easy Flow
+
+Read `AGENTS.md` and `ARCHITECTURE.md` before structural edits.
+
+- Node kinds are `agent` and `human`. Pipeline JSON stays version 1. `normalizePipeline` drops legacy skill nodes and attachment edges, and drops old agent prompt, `customModelId`, and human notes on load. Missing `agentPath` and `agentName` become empty strings. There is no skill node, no prompt field, and no attachment edge kind in the written document. A new kind updates `src/modules/graph/types.ts`, `src/App.tsx` `nodeTypes`, `src/modules/graph/resolve.ts`, and `src/modules/runs/engine.ts` together.
+- `resolvePipeline(doc)` is pure and does not read files. An agent step is `{ kind: "agent", nodeId, modelId, agentPath }`. An empty model id throws `GraphError` `Model id is empty`. Attachment edges still present throw `GraphError`. The cycle message remains `Cycle in pipeline`.
+- An agent node stores `modelId`, `agentPath`, and `agentName`. There is no custom model field. The model dropdown is empty and disabled until `GET /api/models` returns a non-empty list. That route returns `{ configured: false, models: [] }` when `CURSOR_API_KEY` is missing, and only `listModels` results when the key is set. There is no preset fallback.
+- `GET /api/agents` lists `.md` files directly in `%USERPROFILE%/.cursor/agents`. `POST /api/agents/browse` opens a native file dialog and returns the chosen `.md` path, name, and description. The node can also select one of the scanned agents. The file is not copied.
+- On run, the engine reads `agentPath` before calling the runner. The instruction is the markdown body with YAML frontmatter stripped when present. `applyCatalog` prefixes the enabled skill/rule catalog onto the first send only. A missing path or unreadable file fails the step before the SDK is called.
+- Human nodes have no notes field. Approve, Redo, and Decline remain. Redo increments the upstream retry and resends that agent file's body on the same runner, with no catalog and no feedback wrapper.
+- Skills, rules, and MCP servers are an app-wide library, not canvas nodes. Scan is read-only and limited to `%USERPROFILE%/.cursor/skills` (`SKILL.md`), `%USERPROFILE%/.cursor/rules` (`.md` and `.mdc`), and `%USERPROFILE%/.cursor/mcp.json`. Workspace `.cursor` and plugins are not scanned. The dashboard does not author those files.
+- Import is by browse. `POST /api/library/browse` opens a native folder dialog for a skill and resolves the `SKILL.md` directly inside the chosen folder, or a file dialog for a `.mdc` or `.md` rule. `POST /api/library/import` records that absolute path in `data/library/imports.json` (`{ skills: string[], rules: string[] }`). The file is not copied. Remove forgets that path only. Imported rows use source `import`. A path that is already in the Cursor scan stays a single cursor row. MCP servers come only from the user `mcp.json`. `data/library/` also holds `selection.json` and is gitignored. Saved pipelines live in `data/pipelines` and `data/pipelines/*.json` is gitignored.
+- List APIs never return MCP env or header values. `loadEnabledMcpConfigs` is server-side and includes env. Do not log secrets or `CURSOR_API_KEY`. Settings returns `{ configured }`.
+- Enabled skills and rules still become a catalog (name, description, file path). The agent is told to read a file only when the description matches. Redo does not include the catalog again.
+- Enabled MCP servers are passed to `Agent.create` as `mcpServers`. `local.settingSources` is `[]`. Ambient Cursor settings are not loaded.
+- Only `src/modules/cursor/adapter.ts` may import `@cursor/sdk`. `src/modules/cursor/mcpServers.ts` maps configs and does not import the SDK.
+- `GET /api/files` refuses paths outside the workspace, the workspace `.env`, and `data/library/mcp.json`. Library bodies go through `GET /api/library/body`.
+- Library UI is a top-bar modal (`LibraryModal`), not a node.
+- Do not add UI test suites. New parse, resolve, human-gate, library, or agent-file behavior needs a `node:test` file under `tests/`.
+- `npm test` lists `tests/skills.test.ts`, `tests/graph.test.ts`, `tests/human-gate.test.ts`, `tests/library.test.ts`, `tests/mcp-servers.test.ts`, and `tests/agents.test.ts` explicitly.
+
+## File map
+
+- `server/index.ts` and `server/routes/` — HTTP API. `server/routes/library.ts` is the library API. `server/routes/agents.ts` lists and browses agent files. `server/routes/files.ts` is workspace preview.
+- `src/modules/graph/resolve.ts` and `src/modules/graph/types.ts` — pipeline resolution and version 1 shapes (`agent`, `human`, execution edges).
+- `src/modules/storage/pipelines.ts` — saved graphs and `normalizePipeline`.
+- `src/modules/runs/engine.ts` and `src/modules/runs/humanGate.ts` — run loop, catalog on the first send, agent file body on redo, and human decisions.
+- `src/modules/cursor/adapter.ts` and `src/modules/cursor/models.ts` — runner and model id trimming. `src/modules/cursor/mcpServers.ts` maps MCP configs.
+- `src/modules/agents/agentFile.ts` — user-level `.md` agent discovery and instruction text.
+- `src/modules/skills/parseSkill.ts` and `src/modules/skills/scanSkills.ts` — markdown parsing and user-level `SKILL.md` discovery.
+- `src/modules/library/` — scan, selection, imports, `applyCatalog`, and `loadEnabledMcpConfigs`.
+- `src/modules/artifacts/track.ts` — file diffs.
+- `src/App.tsx` and `src/modules/canvas/` — the canvas UI. `LibraryModal` is the library screen.

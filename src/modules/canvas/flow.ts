@@ -4,20 +4,12 @@
  * Outputs: PipelineNode, PipelineEdge, flow nodes, and new node ids.
  */
 import type { Edge, Node } from "@xyflow/react";
-import type {
-  AgentNodeData,
-  HumanNodeData,
-  NodeKind,
-  PipelineEdge,
-  PipelineNode,
-  SkillNodeData,
-} from "../graph/types";
+import type { AgentNodeData, HumanNodeData, NodeKind, PipelineEdge, PipelineNode } from "../graph/types";
 
 export type AgentFlowNode = Node<AgentNodeData, "agent">;
-export type SkillFlowNode = Node<SkillNodeData, "skill">;
 export type HumanFlowNode = Node<HumanNodeData, "human">;
-export type FlowNode = AgentFlowNode | SkillFlowNode | HumanFlowNode;
-export type FlowEdge = Edge<{ kind: "attachment" | "execution" }>;
+export type FlowNode = AgentFlowNode | HumanFlowNode;
+export type FlowEdge = Edge<{ kind: "execution" }>;
 
 export function createNode(kind: NodeKind, position: { x: number; y: number }): FlowNode {
   const id = crypto.randomUUID();
@@ -27,25 +19,13 @@ export function createNode(kind: NodeKind, position: { x: number; y: number }): 
       type: "agent",
       position,
       data: {
-        modelId: "auto",
-        prompt: "",
+        modelId: "",
+        agentPath: "",
+        agentName: "",
         status: "idle",
         elapsedMs: 0,
         retryCount: 0,
-        tokens: { input: 0, output: 0, total: 0 },
-      },
-    };
-  }
-  if (kind === "skill") {
-    return {
-      id,
-      type: "skill",
-      position,
-      data: {
-        source: "custom",
-        skillPath: "",
-        title: "Skill",
-        description: "",
+        tokens: {},
       },
     };
   }
@@ -55,7 +35,6 @@ export function createNode(kind: NodeKind, position: { x: number; y: number }): 
     position,
     data: {
       status: "idle",
-      notes: "",
       artifactPaths: [],
     },
   };
@@ -77,21 +56,12 @@ export function toPipelineNode(node: FlowNode): PipelineNode {
   if (node.type === "agent") {
     return { id: node.id, type: "agent", position, data: node.data };
   }
-  if (node.type === "skill") {
-    return { id: node.id, type: "skill", position, data: node.data };
-  }
-  if (node.type === "human") {
-    return { id: node.id, type: "human", position, data: node.data };
-  }
-  throw new Error("Unknown node type");
+  return { id: node.id, type: "human", position, data: node.data };
 }
 
 export function toFlowNode(node: PipelineNode): FlowNode {
   if (node.type === "agent") {
     return { id: node.id, type: "agent", position: node.position, data: node.data };
-  }
-  if (node.type === "skill") {
-    return { id: node.id, type: "skill", position: node.position, data: node.data };
   }
   return { id: node.id, type: "human", position: node.position, data: node.data };
 }
@@ -101,7 +71,7 @@ export function toPipelineEdge(edge: FlowEdge): PipelineEdge {
     id: edge.id,
     source: edge.source,
     target: edge.target,
-    kind: edge.data?.kind === "attachment" ? "attachment" : "execution",
+    kind: "execution",
   };
 }
 
@@ -110,7 +80,6 @@ export function toFlowEdge(edge: PipelineEdge): FlowEdge {
     id: edge.id,
     source: edge.source,
     target: edge.target,
-    data: { kind: edge.kind },
-    style: edge.kind === "attachment" ? { strokeDasharray: "6 4" } : undefined,
+    data: { kind: "execution" },
   };
 }

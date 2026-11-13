@@ -1,14 +1,19 @@
 /**
- * Responsibility: local JSON API for skills, pipelines, and settings.
+ * Responsibility: local JSON API for the library, skills, pipelines, settings, runs, and models.
  * Inputs: HTTP requests on 127.0.0.1:8787 and the workspace .env file.
- * Outputs: JSON responses. The process listens until stopped.
+ * Outputs: JSON responses, including workspace file previews. The process listens until stopped.
  */
 import { createServer } from "node:http";
+import { LibraryError } from "../src/modules/library";
 import { PipelineValidationError } from "../src/modules/storage/pipelines";
 import { JsonError, sendJson } from "./http";
 import { loadEnv } from "./loadEnv";
 import type { RouteContext } from "./routes/context";
+import { handleAgents } from "./routes/agents";
+import { handleFiles } from "./routes/files";
+import { handleLibrary } from "./routes/library";
 import { handlePipelines } from "./routes/pipelines";
+import { handleModels, handleRuns } from "./routes/runs";
 import { handleSettings } from "./routes/settings";
 import { handleSkills } from "./routes/skills";
 
@@ -21,6 +26,10 @@ const host = "127.0.0.1";
 const server = createServer((req, res) => {
   void handleRequest(req, res).catch((error: unknown) => {
     if (res.headersSent) return;
+    if (error instanceof LibraryError) {
+      sendJson(res, error.status, { error: error.message });
+      return;
+    }
     if (error instanceof PipelineValidationError || error instanceof JsonError) {
       sendJson(res, 400, { error: error.message });
       return;
@@ -33,12 +42,17 @@ const server = createServer((req, res) => {
 async function handleRequest(req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse) {
   const url = new URL(req.url ?? "/", `http://${host}:${port}`);
   const ctx: RouteContext = { req, res, url, workspaceRoot };
+  if (await handleLibrary(ctx)) return;
+  if (await handleAgents(ctx)) return;
   if (await handleSkills(ctx)) return;
   if (await handleSettings(ctx)) return;
   if (await handlePipelines(ctx)) return;
+  if (await handleModels(ctx)) return;
+  if (await handleFiles(ctx)) return;
+  if (await handleRuns(ctx)) return;
   sendJson(res, 404, { error: "Not found" });
 }
 
 server.listen(port, host, () => {
-  console.log(`sharlie-mini-helper API listening on http://${host}:${port}`);
+  console.log(`Sharlie Easy Flow API listening on http://${host}:${port}`);
 });

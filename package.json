@@ -1,15 +1,16 @@
 {
-  "name": "sharlie-mini-helper",
+  "name": "sharlie-easy-flow",
   "private": true,
   "version": "0.1.0",
   "type": "module",
   "scripts": {
     "dev": "concurrently \"vite\" \"tsx watch server/index.ts\"",
     "build": "tsc --noEmit && vite build",
-    "test": "node --import tsx --test tests/*.test.ts",
+    "test": "node --import tsx --test tests/skills.test.ts tests/graph.test.ts tests/human-gate.test.ts tests/library.test.ts tests/mcp-servers.test.ts tests/agents.test.ts",
     "start": "tsx server/index.ts"
   },
   "dependencies": {
+    "@cursor/sdk": "^1.3.1",
     "@xyflow/react": "^12.4.4",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
