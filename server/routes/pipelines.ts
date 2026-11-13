@@ -13,13 +13,13 @@ import { JsonError, readJson, sendJson } from "../http";
 import type { RouteContext } from "./context";
 
 export async function handlePipelines(ctx: RouteContext): Promise<boolean> {
-  const { url, req, res, workspaceRoot } = ctx;
+  const { url, req, res, appRoot } = ctx;
   if (url.pathname === "/api/pipelines") {
     if (req.method !== "GET") {
       sendJson(res, 405, { error: "Method not allowed" });
       return true;
     }
-    const pipelines = await listPipelines(workspaceRoot);
+    const pipelines = await listPipelines(appRoot);
     sendJson(res, 200, { pipelines });
     return true;
   }
@@ -30,7 +30,7 @@ export async function handlePipelines(ctx: RouteContext): Promise<boolean> {
 
   if (req.method === "GET") {
     try {
-      const doc = await readPipeline(workspaceRoot, id);
+      const doc = await readPipeline(appRoot, id);
       if (!doc) {
         sendJson(res, 404, { error: "Pipeline not found" });
         return true;
@@ -49,7 +49,7 @@ export async function handlePipelines(ctx: RouteContext): Promise<boolean> {
   if (req.method === "PUT") {
     try {
       const body = await readJson(req);
-      const saved = await writePipeline(workspaceRoot, body, id);
+      const saved = await writePipeline(appRoot, body, id);
       sendJson(res, 200, saved);
     } catch (error) {
       if (error instanceof PipelineValidationError || error instanceof JsonError) {

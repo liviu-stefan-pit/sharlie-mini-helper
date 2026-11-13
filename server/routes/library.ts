@@ -23,8 +23,8 @@ import { openNativeDialog, type NativeDialogPick } from "../nativeDialog";
 import type { RouteContext } from "./context";
 
 export async function handleLibrary(ctx: RouteContext): Promise<boolean> {
-  const { url, req, res, workspaceRoot } = ctx;
-  const roots = rootsFor(workspaceRoot);
+  const { url, req, res, appRoot } = ctx;
+  const roots = rootsFor(appRoot);
 
   if (url.pathname === "/api/library") {
     if (req.method !== "GET") {
@@ -115,10 +115,10 @@ export async function handleLibrary(ctx: RouteContext): Promise<boolean> {
   return false;
 }
 
-function rootsFor(workspaceRoot: string): LibraryRoots {
+function rootsFor(appRoot: string): LibraryRoots {
   return {
     cursorHome: defaultCursorHome(),
-    appLibraryRoot: libraryRoot(workspaceRoot),
+    appLibraryRoot: libraryRoot(appRoot),
   };
 }
 

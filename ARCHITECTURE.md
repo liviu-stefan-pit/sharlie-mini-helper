@@ -36,6 +36,12 @@ On run, enabled skills and rules become a catalog (name, description, file path)
 
 `src/App.tsx` registers `agent` and `human` in `nodeTypes` and listens to the run stream. Library UI is a top-bar modal (`LibraryModal` in `src/modules/canvas/LibraryModal.tsx`), not a node. An agent card selects a scanned agent or browses for one `.md` file. The file is not copied.
 
+## Workspace
+
+The workspace is a folder the user picks in Settings. It is stored in `data/app/settings.json` as `{ version: 1, workspacePath }` under the app root. `data/app/` is gitignored. `GET /api/workspace` reads that file and re-validates the folder. `POST /api/workspace/browse` opens a native folder dialog and does not save. `PUT /api/workspace` saves `null`, or a path that passes validation. Pipelines still live in `data/pipelines`.
+
+`validateWorkspacePath` checks, in order: the path is a non-empty string; it is absolute; `realpath` succeeds; it is a directory; it is not a drive root; it is not the app folder, inside the app folder, or a parent of the app folder; and the folder is writable. The write check creates `.sharlie-write-test` and deletes it. A stored folder that fails those checks stays invalid until the user picks another one.
+
 ## SSE events
 
 `GET /api/runs/:id/events` writes these event names: `node-status`, `token`, `assistant`, `artifact`, `paused`, `done`, `error`, `stopped`.

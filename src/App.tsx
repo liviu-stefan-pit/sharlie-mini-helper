@@ -18,7 +18,16 @@ import {
   type Edge,
 } from "@xyflow/react";
 import type { AgentStatus, HumanStatus, NodeKind, PipelineDocument, PipelineSummary } from "./modules/graph/types";
-import { fetchModels, fetchPipeline, fetchPipelines, postDecision, savePipeline, startRun } from "./modules/canvas/api";
+import {
+  fetchModels,
+  fetchPipeline,
+  fetchPipelines,
+  fetchWorkspace,
+  postDecision,
+  savePipeline,
+  startRun,
+  type WorkspaceStatus,
+} from "./modules/canvas/api";
 import { AgentNode } from "./modules/canvas/AgentNode";
 import { HumanNode } from "./modules/canvas/HumanNode";
 import {
@@ -71,6 +80,7 @@ function Editor() {
   const [runId, setRunId] = useState<string | null>(null);
   const [previewFile, setPreviewFile] = useState<string | null>(null);
   const [tokenPill, setTokenPill] = useState({ run: 0, session: 0 });
+  const [workspace, setWorkspace] = useState<WorkspaceStatus>({ path: null, valid: false });
   const spawn = useRef(0);
   const sourceRef = useRef<EventSource | null>(null);
   const generationRef = useRef(0);
@@ -118,6 +128,14 @@ function Editor() {
     void fetchPipelines()
       .then(setPipelines)
       .catch(() => setPipelines([]));
+  }, []);
+
+  useEffect(() => {
+    void fetchWorkspace()
+      .then(setWorkspace)
+      .catch(() => {
+        /* keep the default */
+      });
   }, []);
 
   useEffect(() => {
@@ -316,6 +334,10 @@ function Editor() {
             }}
             onOpenLibrary={() => setLibraryOpen(true)}
             onOpenSettings={() => setSettingsOpen(true)}
+            workspaceName={workspaceFolderName(workspace.path)}
+            workspaceValid={workspace.valid}
+            workspacePath={workspace.path}
+            workspaceError={workspace.error}
             notice={notice}
             runPhase={runPhase}
             onRun={onRun}
@@ -355,7 +377,12 @@ function Editor() {
             )}
           </div>
         </div>
-        <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} onKeySaved={loadModels} />
+        <SettingsModal
+          open={settingsOpen}
+          onClose={() => setSettingsOpen(false)}
+          onKeySaved={loadModels}
+          onWorkspaceChanged={setWorkspace}
+        />
         <LibraryModal open={libraryOpen} onClose={() => setLibraryOpen(false)} />
       </ModelsContext.Provider>
       </RunContext.Provider>
@@ -536,6 +563,16 @@ function isHumanStatus(status: string): status is HumanStatus {
 function readPayload<T>(event: Event): T | null {
   if (!(event instanceof MessageEvent) || typeof event.data !== "string") return null;
   return parseJson<T>(event.data);
+}
+
+function workspaceFolderName(filePath: string | null): string | null {
+  if (!filePath) return null;
+  const parts = filePath.split(/[/\\]/);
+  for (let index = parts.length - 1; index >= 0; index -= 1) {
+    const part = parts[index];
+    if (part) return part;
+  }
+  return null;
 }
 
 function parseJson<T>(text: string): T | null {

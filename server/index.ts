@@ -16,10 +16,11 @@ import { handlePipelines } from "./routes/pipelines";
 import { handleModels, handleRuns } from "./routes/runs";
 import { handleSettings } from "./routes/settings";
 import { handleSkills } from "./routes/skills";
+import { handleWorkspace } from "./routes/workspace";
 
 loadEnv();
 
-const workspaceRoot = process.cwd();
+const appRoot = process.cwd();
 const port = 8787;
 const host = "127.0.0.1";
 
@@ -41,10 +42,11 @@ const server = createServer((req, res) => {
 
 async function handleRequest(req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse) {
   const url = new URL(req.url ?? "/", `http://${host}:${port}`);
-  const ctx: RouteContext = { req, res, url, workspaceRoot };
+  const ctx: RouteContext = { req, res, url, appRoot };
   if (await handleLibrary(ctx)) return;
   if (await handleAgents(ctx)) return;
   if (await handleSkills(ctx)) return;
+  if (await handleWorkspace(ctx)) return;
   if (await handleSettings(ctx)) return;
   if (await handlePipelines(ctx)) return;
   if (await handleModels(ctx)) return;

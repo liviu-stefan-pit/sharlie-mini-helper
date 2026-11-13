@@ -20,6 +20,8 @@ npm run dev
 
 4. Open the Vite URL printed in the terminal, usually http://127.0.0.1:5173.
 
+5. Open Settings and pick a workspace folder.
+
 ## Nodes
 
 The canvas has three node types:

@@ -3,4 +3,5 @@ dist
 .env
 data/pipelines/*.json
 data/library/
+data/app/
 *.log

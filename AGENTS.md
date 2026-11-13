@@ -5,7 +5,7 @@ Map for coding agents working in this repo. Read this file and `ARCHITECTURE.md`
 ## Layout
 
 - `server/` — local HTTP API on `127.0.0.1:8787`. `server/index.ts` dispatches requests. `server/http.ts` reads and writes JSON. `server/loadEnv.ts` loads the workspace `.env` and upserts a single key.
-- `server/routes/` — one handler per area: `library.ts`, `agents.ts`, `skills.ts`, `settings.ts`, `pipelines.ts`, `runs.ts` (runs and models), `files.ts`, plus the shared `context.ts` (`RouteContext`).
+- `server/routes/` — one handler per area: `library.ts`, `agents.ts`, `skills.ts`, `settings.ts`, `pipelines.ts`, `runs.ts` (runs and models), `files.ts`, `workspace.ts`, plus the shared `context.ts` (`RouteContext` carries `appRoot`).
 - `src/modules/canvas/` — React Flow UI: agent and human node cards, inspector, top bar, `LibraryModal`, settings modal, file preview, theme, and the browser API client (`api.ts`). `src/App.tsx` owns the canvas state and registers `nodeTypes`.
 - `src/modules/graph/` — serializable pipeline shapes (`types.ts`) and `resolvePipeline` (`resolve.ts`).
 - `src/modules/agents/` — `agentFile.ts` lists `.md` files in the user agents folder and reads one file's instruction. The file is not copied.
@@ -15,6 +15,7 @@ Map for coding agents working in this repo. Read this file and `ARCHITECTURE.md`
 - `src/modules/cursor/` — model id trimming (`models.ts`), MCP mapping (`mcpServers.ts`), and the Cursor runner (`adapter.ts`). `adapter.ts` is the SDK boundary.
 - `src/modules/runs/` — `engine.ts` walks execution steps and streams events. `humanGate.ts` is the pure pause and decision logic.
 - `src/modules/artifacts/` — `track.ts` snapshots the workspace and diffs mtimes into artifact paths.
+- `src/modules/workspace/` — reads `data/app/settings.json` and validates the workspace folder.
 
 `src/main.tsx` mounts the React app. Vite serves the UI and proxies `/api` to the local server.
 
@@ -31,6 +32,8 @@ An agent node stores `modelId`, `agentPath`, and `agentName`. There is no prompt
 On run, the engine reads `agentPath` before calling the runner. The instruction is the markdown body with YAML frontmatter stripped when present. Enabled skills and rules become a catalog (name, description, file path). `applyCatalog` prefixes that catalog onto the first send only. The agent is told to read a file only when the description matches. Upstream text from earlier agents is appended on that first send. A missing path or unreadable file fails the step before the SDK is called. Redo sends that agent file's body again on the same runner, with no catalog and no feedback wrapper. Enabled MCP servers are passed to `Agent.create` as `mcpServers`. `local.settingSources` is `[]`. Ambient Cursor settings are not loaded.
 
 The human pause uses `enterHuman` and `applyHumanDecision` in `src/modules/runs/humanGate.ts`. Human nodes have no notes field. The canvas posts Approve, Redo, or Decline to `POST /api/runs/:id/decision`. File preview and artifact text go through `GET /api/files` (`server/routes/files.ts`). That route refuses paths outside the workspace, the workspace `.env`, and `data/library/mcp.json`. Library bodies go through `GET /api/library/body`.
+
+`GET /api/workspace` returns `{ path, valid, error? }`. `POST /api/workspace/browse` opens a native folder dialog and does not save. `PUT /api/workspace` takes `{ path: string | null }`, validates a path, and saves it. `null` clears the workspace.
 
 ## State machine
 
@@ -64,6 +67,8 @@ Entering a human step calls `enterHuman`, which sets the run to `paused` and the
 - `server/routes/runs.ts` — `POST /api/runs`, decisions, the event stream, and `GET /api/models`.
 - `server/routes/files.ts` — workspace file preview. Refuses paths outside the workspace, the workspace `.env`, and `data/library/mcp.json`.
 - `server/routes/settings.ts` — key configured flag and `.env` update. Responses stay `{ configured }`.
+- `server/routes/workspace.ts` — `GET /api/workspace`, `POST /api/workspace/browse`, and `PUT /api/workspace`.
+- `src/modules/workspace/` — `readAppSettings`, `writeAppSettings`, `validateWorkspacePath`, and `getActiveWorkspace`.
 - `src/App.tsx` — canvas, `nodeTypes` (`agent`, `human`), and the SSE client.
 - `src/modules/canvas/LibraryModal.tsx` — top-bar library modal, not a node.
 
@@ -72,7 +77,7 @@ Entering a human step calls `enterHuman`, which sets the run to `paused` and the
 - The only node kinds are `agent` and `human`. Pipeline JSON stays version 1. `normalizePipeline` drops legacy skill nodes and attachment edges, and drops old agent prompt, `customModelId`, and human notes on load. Missing `agentPath` and `agentName` become empty strings. Adding a kind means updating `src/modules/graph/types.ts`, the canvas `nodeTypes` in `src/App.tsx`, `src/modules/graph/resolve.ts`, and `src/modules/runs/engine.ts` together.
 - The only file that may import `@cursor/sdk` is `src/modules/cursor/adapter.ts`. `src/modules/cursor/mcpServers.ts` maps configs and does not import the SDK.
 - Never log or return `CURSOR_API_KEY`. Settings responses stay `{ configured }`. List APIs never return MCP env or header values. `loadEnabledMcpConfigs` is server-side and includes env. Do not log secrets.
-- Saved pipeline files live in `data/pipelines` and `data/pipelines/*.json` is gitignored.
+- Saved pipeline files live in `data/pipelines` and `data/pipelines/*.json` is gitignored. `data/app/` is gitignored.
 - Skills, rules, and MCP servers are an app-wide library, not canvas nodes. Scan is read-only and limited to `%USERPROFILE%/.cursor/skills` (`SKILL.md`), `%USERPROFILE%/.cursor/rules` (`.md` and `.mdc`), and `%USERPROFILE%/.cursor/mcp.json`. Workspace `.cursor` and plugins are not scanned. The dashboard does not author those files.
 - Import is by browse. `POST /api/library/browse` opens a native folder dialog for a skill and resolves the `SKILL.md` directly inside the chosen folder, or a file dialog for a `.mdc` or `.md` rule. `POST /api/library/import` records that absolute path in `data/library/imports.json` (`{ skills: string[], rules: string[] }`). The file is not copied. Remove forgets that path only. Imported rows use source `import`. A path that is already in the Cursor scan stays a single cursor row. MCP servers come only from the user `mcp.json`. `data/library/` also holds `selection.json` and is gitignored.
 - `GET /api/agents` lists `.md` files directly in `%USERPROFILE%/.cursor/agents`. `POST /api/agents/browse` returns the chosen `.md` path, name, and description. The node can also select a scanned agent. The file is not copied.
@@ -83,4 +88,4 @@ Entering a human step calls `enterHuman`, which sets the run to `paused` and the
 - Library UI is a top-bar modal (`LibraryModal`), not a node.
 - The model dropdown is empty and disabled until `GET /api/models` returns a non-empty list. That route returns `{ configured: false, models: [] }` when `CURSOR_API_KEY` is missing, and only `listModels` results when the key is set. There is no preset fallback.
 - Do not add UI test suites, snapshot tests, or new test dependencies. Use `node:test` and `node:assert/strict`.
-- New behavior for `parseSkillMarkdown`, `resolvePipeline`, the human gate, the library, or agent files needs a test in `tests/`. The `npm test` script lists `tests/skills.test.ts`, `tests/graph.test.ts`, `tests/human-gate.test.ts`, `tests/library.test.ts`, `tests/mcp-servers.test.ts`, and `tests/agents.test.ts` explicitly so Windows does not depend on shell globbing.
+- New behavior for `parseSkillMarkdown`, `resolvePipeline`, the human gate, the library, agent files, or the workspace needs a test in `tests/`. The `npm test` script lists `tests/skills.test.ts`, `tests/graph.test.ts`, `tests/human-gate.test.ts`, `tests/library.test.ts`, `tests/mcp-servers.test.ts`, `tests/agents.test.ts`, and `tests/workspace.test.ts` explicitly so Windows does not depend on shell globbing.

@@ -30,7 +30,7 @@ export async function handleSettings(ctx: RouteContext): Promise<boolean> {
       sendJson(ctx.res, 400, { error: "apiKey must be a single line" });
       return true;
     }
-    const envPath = path.join(ctx.workspaceRoot, ".env");
+    const envPath = path.join(ctx.appRoot, ".env");
     await upsertEnvValue(envPath, "CURSOR_API_KEY", apiKey);
     process.env.CURSOR_API_KEY = apiKey;
     sendJson(ctx.res, 200, { configured: apiKey.length > 0 });

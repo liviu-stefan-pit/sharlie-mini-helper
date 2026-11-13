@@ -57,11 +57,11 @@ export async function handleRuns(ctx: RouteContext): Promise<boolean> {
         sendJson(ctx.res, 400, { error: "CURSOR_API_KEY is not configured" });
         return true;
       }
-      const library = await loadEnabledLibrary(ctx.workspaceRoot);
+      const library = await loadEnabledLibrary(ctx.appRoot);
       const id = startRun({
         steps,
         apiKey,
-        cwd: ctx.workspaceRoot,
+        cwd: ctx.appRoot,
         catalog: library.catalog,
         mcpServers: library.mcpServers,
       });
@@ -117,13 +117,13 @@ export async function handleRuns(ctx: RouteContext): Promise<boolean> {
   return true;
 }
 
-async function loadEnabledLibrary(workspaceRoot: string): Promise<{
+async function loadEnabledLibrary(appRoot: string): Promise<{
   catalog: string;
   mcpServers: Awaited<ReturnType<typeof loadEnabledMcpConfigs>>;
 }> {
   const roots = {
     cursorHome: defaultCursorHome(),
-    appLibraryRoot: libraryRoot(workspaceRoot),
+    appLibraryRoot: libraryRoot(appRoot),
   };
   const [snapshot, mcpServers] = await Promise.all([scanLibrary(roots), loadEnabledMcpConfigs(roots)]);
   const catalog = buildCatalogPrompt(

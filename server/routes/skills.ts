@@ -17,7 +17,7 @@ export async function handleSkills(ctx: RouteContext): Promise<boolean> {
   }
   const skills = mergeSkills([
     await scanSkills(),
-    await scanSkills(libraryRoot(ctx.workspaceRoot)),
+    await scanSkills(libraryRoot(ctx.appRoot)),
   ]);
   sendJson(ctx.res, 200, { skills });
   return true;

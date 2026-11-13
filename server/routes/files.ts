@@ -24,7 +24,7 @@ export async function handleFiles(ctx: RouteContext): Promise<boolean> {
 
   let root: string;
   try {
-    root = await fs.realpath(ctx.workspaceRoot);
+    root = await fs.realpath(ctx.appRoot);
   } catch {
     sendJson(ctx.res, 400, { error: "Workspace is not available" });
     return true;

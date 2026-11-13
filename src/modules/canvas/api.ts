@@ -1,7 +1,7 @@
 /**
  * Responsibility: browser calls to the local /api server.
  * Inputs: pipeline documents, pipeline ids, an API key string, and library payloads.
- * Outputs: pipeline summaries, saved documents, settings status, models, run ids, and library snapshots.
+ * Outputs: pipeline summaries, saved documents, settings status, workspace status, models, run ids, and library snapshots.
  */
 import type { PipelineDocument, PipelineSummary } from "../graph/types";
 import type { LibraryRule, LibrarySkill, LibrarySnapshot, Selection } from "../library/types";
@@ -73,6 +73,24 @@ export async function saveSettings(apiKey: string): Promise<{ configured: boolea
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ apiKey }),
+  });
+}
+
+export type WorkspaceStatus = { path: string | null; valid: boolean; error?: string };
+
+export async function fetchWorkspace(): Promise<WorkspaceStatus> {
+  return requestJson<WorkspaceStatus>("/api/workspace");
+}
+
+export async function browseWorkspace(): Promise<{ cancelled: true } | { path: string }> {
+  return requestJson<{ cancelled: true } | { path: string }>("/api/workspace/browse", { method: "POST" });
+}
+
+export async function saveWorkspace(path: string | null): Promise<WorkspaceStatus> {
+  return requestJson<WorkspaceStatus>("/api/workspace", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ path }),
   });
 }
 
