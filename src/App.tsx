@@ -83,6 +83,7 @@ function Editor() {
   const [workspace, setWorkspace] = useState<WorkspaceStatus>({ path: null, valid: false });
   const workspaceReady = workspace.valid;
   const spawn = useRef(0);
+  const pinnedId = useRef<string | null>(null);
   const sourceRef = useRef<EventSource | null>(null);
   const generationRef = useRef(0);
   const { screenToFlowPosition, getNodes, fitView } = useReactFlow();
@@ -204,18 +205,29 @@ function Editor() {
 
   function onWorkspaceChanged(status: WorkspaceStatus) {
     setWorkspace(status);
+    pinnedId.current = null;
     setCurrentId(null);
     setName("Untitled");
     setNodes([]);
     setEdges([]);
     setSelectedId(null);
     setPreviewFile(null);
+    generationRef.current += 1;
+    sourceRef.current?.close();
+    sourceRef.current = null;
+    setRunPhase("idle");
+    setRunId(null);
   }
 
   function pipelineDocument(): PipelineDocument {
+    const id = currentId ?? pinnedId.current ?? makePipelineId(name);
+    if (!currentId) {
+      pinnedId.current = id;
+      setCurrentId(id);
+    }
     return {
       version: 1,
-      id: currentId ?? makePipelineId(name),
+      id,
       name: name.trim() || "Untitled",
       nodes: nodes.map((node) => toPipelineNode(node)),
       edges: edges.map((edge) => toPipelineEdge(edge)),
@@ -242,6 +254,7 @@ function Editor() {
   async function onLoad(id: string) {
     try {
       const doc = await fetchPipeline(id);
+      pinnedId.current = null;
       setCurrentId(doc.id);
       setName(doc.name);
       setNodes(doc.nodes.map((node) => toFlowNode(node)));

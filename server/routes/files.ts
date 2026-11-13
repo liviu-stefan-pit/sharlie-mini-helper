@@ -99,7 +99,8 @@ export async function handleFiles(ctx: RouteContext): Promise<boolean> {
 }
 
 function isEnvFileName(name: string): boolean {
-  return name === ".env" || name.startsWith(".env.");
+  const fileName = process.platform === "win32" ? name.toLowerCase() : name;
+  return fileName === ".env" || fileName.startsWith(".env.");
 }
 
 function escapes(root: string, candidate: string): boolean {

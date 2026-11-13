@@ -36,7 +36,7 @@ Pipelines are version 1 JSON.
 
 ## Run
 
-Run posts the canvas graph to `POST /api/runs`. The server resolves the graph and starts local `@cursor/sdk` agents: one local agent per Agent node, with the workspace as the working directory. Skills on attachment edges are injected into that agent's prompt. Execution follows topological order of the agent and human nodes. Skill nodes are not execution steps.
+Run posts the canvas graph to `POST /api/runs`. The server resolves the graph and starts local `@cursor/sdk` agents: one local agent per Agent node, with `<workspace>/<id>/` as the working directory. Skills on attachment edges are injected into that agent's prompt. Execution follows topological order of the agent and human nodes. Skill nodes are not execution steps.
 
 Events come back on `GET /api/runs/:id/events`. A human decision goes to `POST /api/runs/:id/decision`.
 
