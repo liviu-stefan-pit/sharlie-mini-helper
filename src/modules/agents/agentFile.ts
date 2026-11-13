@@ -1,7 +1,7 @@
 /**
- * Responsibility: list agent markdown files and read one file's instruction.
- * Inputs: a cursor home directory, or an absolute path to a markdown file.
- * Outputs: agent name, description, and path, or the trimmed markdown body.
+ * Responsibility: list agent markdown files, resolve an agent path, and read one file's instruction.
+ * Inputs: a cursor home directory, a workflow folder plus an agent path, or a path to a markdown file.
+ * Outputs: agent name, description, and path, a resolved path, or the trimmed markdown body.
  * Scan reads only the top level of <root>/agents. It does not copy files.
  */
 import fs from "node:fs/promises";
@@ -50,6 +50,13 @@ export async function scanAgents(root: string): Promise<AgentFile[]> {
     (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }) || a.path.localeCompare(b.path),
   );
   return agents;
+}
+
+/** "" stays "". Absolute stays as is. Relative is resolved against the workflow folder. */
+export function resolveAgentPath(workflowDir: string, agentPath: string): string {
+  if (agentPath === "") return "";
+  if (path.isAbsolute(agentPath)) return agentPath;
+  return path.resolve(workflowDir, agentPath);
 }
 
 export function agentBody(markdown: string): string {

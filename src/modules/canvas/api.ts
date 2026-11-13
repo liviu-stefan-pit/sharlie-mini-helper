@@ -97,6 +97,14 @@ export async function exportWorkflow(
   });
 }
 
+export async function importWorkflow(): Promise<
+  { cancelled: true } | { id: string; name: string; warnings: string[] }
+> {
+  return requestJson<{ cancelled: true } | { id: string; name: string; warnings: string[] }>("/api/sharlie/import", {
+    method: "POST",
+  });
+}
+
 export async function saveWorkspace(path: string | null): Promise<WorkspaceStatus> {
   return requestJson<WorkspaceStatus>("/api/workspace", {
     method: "PUT",

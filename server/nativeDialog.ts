@@ -1,6 +1,6 @@
 /**
  * Responsibility: open a native Windows folder or file dialog.
- * Inputs: dialog kind (skill, rule, agent, workspace, sharlie-save). The PowerShell script is static for that kind.
+ * Inputs: dialog kind (skill, rule, agent, workspace, sharlie-save, sharlie-open). The PowerShell script is static for that kind.
  * Outputs: the chosen path, or cancelled when the user closes the dialog. No file is copied.
  */
 import { spawn } from "node:child_process";
@@ -153,12 +153,38 @@ const SHARLIE_SAVE_SCRIPT = [
   "}",
 ].join("\n");
 
+const SHARLIE_OPEN_SCRIPT = [
+  SCRIPT_SETUP,
+  "$dialog = New-Object System.Windows.Forms.OpenFileDialog",
+  "$dialog.Title = 'Import workflow'",
+  "$dialog.Filter = 'Sharlie workflow (*.sharlie)|*.sharlie'",
+  "$dialog.CheckFileExists = $true",
+  "$dialog.Multiselect = $false",
+  "$chosen = $null",
+  "try {",
+  "  $owner.Show()",
+  "  $owner.TopMost = $true",
+  "  [void]$owner.Activate()",
+  "  $result = $dialog.ShowDialog($owner)",
+  "  if ($result -eq [System.Windows.Forms.DialogResult]::OK) {",
+  "    $chosen = $dialog.FileName",
+  "  }",
+  "} finally {",
+  "  $dialog.Dispose()",
+  "  $owner.Dispose()",
+  "}",
+  "if ($null -ne $chosen -and \"$chosen\" -ne '') {",
+  "  [Console]::Out.WriteLine($chosen)",
+  "}",
+].join("\n");
+
 const DIALOG_SCRIPTS = {
   skill: SKILL_SCRIPT,
   rule: RULE_SCRIPT,
   agent: AGENT_SCRIPT,
   workspace: WORKSPACE_SCRIPT,
   "sharlie-save": SHARLIE_SAVE_SCRIPT,
+  "sharlie-open": SHARLIE_OPEN_SCRIPT,
 } as const;
 
 export function openNativeDialog(

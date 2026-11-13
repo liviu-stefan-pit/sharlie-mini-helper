@@ -60,6 +60,12 @@ Export is in the top bar. It saves the current workflow, then opens a native Sav
 
 The export can include skill, rule, and agent files. MCP servers are stored as names only. A `.sharlie` file does not contain MCP command, args, url, env, headers, or `CURSOR_API_KEY`.
 
+## Import
+
+Import is in the top bar, beside Export. It opens a native file dialog for a `.sharlie` file. `POST /api/sharlie/import` creates a new workflow folder and extracts bundled skills, rules, and agents into `.sharlie/bundle/`.
+
+A missing skill, rule, agent, or MCP server does not fail the import. The workflow loads, and a warnings list names what is missing. Import fails when the file is not valid JSON, is not a `.sharlie` package, has no format version, was made by a newer app, or contains a damaged workflow. A file larger than 20 MB is rejected.
+
 ## Tests
 
 ```bash

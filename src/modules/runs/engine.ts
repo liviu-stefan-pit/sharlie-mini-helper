@@ -4,7 +4,7 @@
  * Outputs: an in-memory run with status, outputs, artifacts, and SSE events.
  * The API key, catalog, and MCP configs stay on the run record. Secrets are never logged or returned.
  */
-import { readAgentInstruction } from "../agents/agentFile";
+import { readAgentInstruction, resolveAgentPath } from "../agents/agentFile";
 import { diffSnapshots, snapshotFiles } from "../artifacts/track";
 import { createCursorAgentRunner, type CursorAgentRunner, type RunnerEvent, type SendResult } from "../cursor/adapter";
 import type { ExecutionStep } from "../graph/resolve";
@@ -182,7 +182,7 @@ async function runAgent(
   index: number,
 ): Promise<void> {
   emit(run, "node-status", { nodeId: step.nodeId, status: "running", elapsedMs: 0 });
-  const instruction = await readAgentInstruction(step.agentPath);
+  const instruction = await readAgentInstruction(resolveAgentPath(run.cwd, step.agentPath));
   if (!instruction.ok) {
     await failAgentRead(run, step.nodeId, instruction.message);
     return;
@@ -203,7 +203,9 @@ async function resendUpstream(
 ): Promise<void> {
   const { nodeId, retryCount } = effect;
   const step = run.steps.find((item) => item.kind === "agent" && item.nodeId === nodeId);
-  const instruction = await readAgentInstruction(step?.kind === "agent" ? step.agentPath : "");
+  const instruction = await readAgentInstruction(
+    resolveAgentPath(run.cwd, step?.kind === "agent" ? step.agentPath : ""),
+  );
   if (!instruction.ok) {
     await failAgentRead(run, nodeId, instruction.message, retryCount);
     return;

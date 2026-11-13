@@ -21,6 +21,7 @@ import type { AgentStatus, HumanStatus, NodeKind, PipelineDocument, PipelineSumm
 import {
   exportWorkflow,
   fetchModels,
+  importWorkflow,
   fetchPipeline,
   fetchPipelines,
   fetchWorkspace,
@@ -89,8 +90,11 @@ function Editor() {
   const [exportBusy, setExportBusy] = useState(false);
   const [warningsOpen, setWarningsOpen] = useState(false);
   const [warningLines, setWarningLines] = useState<string[]>([]);
+  const [warningTitle, setWarningTitle] = useState("Exported with warnings");
+  const [warningIntro, setWarningIntro] = useState<string | undefined>(undefined);
   const workspaceReady = workspace.valid;
   const canExport = workspaceReady && runPhase === "idle";
+  const canImport = workspaceReady && runPhase === "idle";
   const spawn = useRef(0);
   const pinnedId = useRef<string | null>(null);
   const sourceRef = useRef<EventSource | null>(null);
@@ -275,6 +279,8 @@ function Editor() {
       setNotice({ tone: "ok", text: `Exported to ${fileName}` });
       if (result.warnings.length > 0) {
         setWarningLines(result.warnings);
+        setWarningTitle("Exported with warnings");
+        setWarningIntro(undefined);
         setWarningsOpen(true);
       }
     } catch (error) {
@@ -282,6 +288,26 @@ function Editor() {
     } finally {
       setExportBusy(false);
       setExportOpen(false);
+    }
+  }
+
+  async function onImport() {
+    try {
+      const result = await importWorkflow();
+      if ("cancelled" in result) return;
+      setPipelines(await fetchPipelines());
+      await onLoad(result.id);
+      setNotice({ tone: "ok", text: `Imported "${result.name}"` });
+      if (result.warnings.length > 0) {
+        setWarningLines(result.warnings);
+        setWarningTitle("Imported with warnings");
+        setWarningIntro(
+          "The workflow was imported. Items below are missing or need attention. Missing names are shown in red.",
+        );
+        setWarningsOpen(true);
+      }
+    } catch (error) {
+      setNotice({ tone: "err", text: error instanceof Error ? error.message : "Import failed" });
     }
   }
 
@@ -389,6 +415,8 @@ function Editor() {
             pipelines={pipelines}
             currentId={currentId}
             onLoad={(id) => void onLoad(id)}
+            onImport={() => void onImport()}
+            canImport={canImport}
             onExport={() => setExportOpen(true)}
             canExport={canExport}
             theme={theme}
@@ -455,7 +483,13 @@ function Editor() {
         />
         <LibraryModal open={libraryOpen} onClose={() => setLibraryOpen(false)} />
         <ExportModal open={exportOpen} busy={exportBusy} onClose={() => setExportOpen(false)} onExport={(includeFiles) => void onExport(includeFiles)} />
-        <WarningsModal open={warningsOpen} title="Exported with warnings" warnings={warningLines} onClose={() => setWarningsOpen(false)} />
+        <WarningsModal
+          open={warningsOpen}
+          title={warningTitle}
+          intro={warningIntro}
+          warnings={warningLines}
+          onClose={() => setWarningsOpen(false)}
+        />
       </ModelsContext.Provider>
       </RunContext.Provider>
     </PatchContext.Provider>
