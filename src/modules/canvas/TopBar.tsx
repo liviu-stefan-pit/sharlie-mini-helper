@@ -59,7 +59,7 @@ export function TopBar({
       <span className="text-[13px] font-semibold tracking-tight">Sharlie Easy Flow</span>
       <button
         type="button"
-        className={workspaceValid && workspaceName ? ghostButtonClass : `${ghostButtonClass} text-red-600`}
+        className={workspaceValid && workspaceName ? ghostButtonClass : `${ghostButtonClass} text-red-600 dark:text-red-600`}
         title={workspaceButtonTitle(workspaceName, workspaceValid, workspacePath, workspaceError)}
         onClick={onOpenSettings}
       >
