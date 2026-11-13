@@ -4,6 +4,7 @@
  * Outputs: a SharliePackage and warnings, or SharlieFormatError for a hard failure.
  */
 import type { PipelineDocument } from "../graph/types";
+import { samePath } from "../library/paths";
 import { isSafePipelineId, isSafeRelativePath, normalizePipeline } from "../storage/pipelines";
 import {
   SHARLIE_FORMAT,
@@ -110,7 +111,7 @@ function parseFiles(
     }
     files.push({ path: file.path, encoding: file.encoding, content: file.content });
   }
-  if (!files.some((file) => file.path === entry)) {
+  if (!files.some((file) => samePath(file.path, entry))) {
     const label = kind === "skill" ? "Skill" : kind === "rule" ? "Rule" : "Agent";
     warnings.push(`${label} "${name}" has no main file and will be treated as missing`);
     return null;

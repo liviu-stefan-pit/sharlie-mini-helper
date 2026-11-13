@@ -125,11 +125,19 @@ describe("sharlie format", () => {
       });
       const skill = pkg.items.find((item) => item.kind === "skill");
       assert.ok(skill?.files);
-      assert.equal(skill.entry, "SKILL.md");
-      assert.ok(skill.files.some((file) => samePath(file.path, skill.entry)));
+      assert.ok(skill.files.some((file) => file.path === skill.entry));
       assert.ok(skill.files.some((file) => file.path === "scripts/run.py"));
       assert.equal(
         warnings.some((warning) => warning.includes("too large")),
+        false,
+      );
+      const parsed = parseSharliePackage(JSON.stringify(pkg));
+      const parsedSkill = parsed.pkg.items.find((item) => item.kind === "skill");
+      assert.ok(parsedSkill?.files);
+      assert.ok(parsedSkill.files.some((file) => file.path === "scripts/run.py"));
+      assert.ok(parsedSkill.files.some((file) => samePath(file.path, parsedSkill.entry)));
+      assert.equal(
+        parsed.warnings.some((warning) => warning.includes("no main file")),
         false,
       );
     } finally {

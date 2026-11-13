@@ -262,7 +262,8 @@ async function packSkill(skill: NamedFile, index: number, includeFiles: boolean,
       maxFileBytes: LIMITS.maxFileBytes,
     });
     warnings.push(...bundled.warnings);
-    if (!bundled.files.some((file) => samePath(file.path, entry))) {
+    const matched = bundled.files.find((file) => samePath(file.path, entry));
+    if (!matched) {
       const main = await readEncodedFile(filePath, entry);
       if (main) {
         files = [main];
@@ -271,6 +272,7 @@ async function packSkill(skill: NamedFile, index: number, includeFiles: boolean,
         warnings.push(`Skill "${skill.name}" could not be read and was exported as a name only`);
       }
     } else {
+      entry = matched.path;
       files = bundled.files;
       if (bundled.truncated) {
         warnings.push(`Skill "${skill.name}" was cut to the first 100 files / 5 MB`);
