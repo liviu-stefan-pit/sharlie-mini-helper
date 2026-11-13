@@ -1,12 +1,13 @@
 /**
- * Responsibility: read a workspace file for the canvas preview.
- * Inputs: GET /api/files?path= and the workspace root.
- * Outputs: utf8 text, or 400/403/404 when the path is not a readable file inside the workspace. Refuses the workspace .env file and data/library/mcp.json.
+ * Responsibility: read a file inside the selected workspace for the canvas preview.
+ * Inputs: GET /api/files?path= and the workspace folder.
+ * Outputs: utf8 text, or 400/403/404/409 when the path is missing, forbidden, or no workspace is selected. Refuses the workspace .env file, any .env or .env.* file, and data/library/mcp.json.
  */
 import fs from "node:fs/promises";
 import path from "node:path";
 import { sendJson } from "../http";
 import type { RouteContext } from "./context";
+import { requireWorkspace } from "./workspace";
 
 const MAX_BYTES = 200_000;
 
@@ -16,6 +17,9 @@ export async function handleFiles(ctx: RouteContext): Promise<boolean> {
     sendJson(ctx.res, 405, { error: "Method not allowed" });
     return true;
   }
+  const workspace = await requireWorkspace(ctx);
+  if (!workspace) return true;
+
   const requested = ctx.url.searchParams.get("path");
   if (requested === null || requested.trim() === "") {
     sendJson(ctx.res, 400, { error: "path is required" });
@@ -24,7 +28,7 @@ export async function handleFiles(ctx: RouteContext): Promise<boolean> {
 
   let root: string;
   try {
-    root = await fs.realpath(ctx.appRoot);
+    root = await fs.realpath(workspace);
   } catch {
     sendJson(ctx.res, 400, { error: "Workspace is not available" });
     return true;
@@ -55,7 +59,11 @@ export async function handleFiles(ctx: RouteContext): Promise<boolean> {
   }
 
   const relPosix = path.relative(root, real).split(/[/\\]/).join("/");
-  if ((await isWorkspaceEnv(root, real, relPosix)) || (await isLibraryMcp(root, real, relPosix))) {
+  if (
+    (await isWorkspaceEnv(root, real, relPosix)) ||
+    (await isLibraryMcp(root, real, relPosix)) ||
+    isEnvFileName(path.basename(real))
+  ) {
     sendJson(ctx.res, 403, { error: "Forbidden" });
     return true;
   }
@@ -88,6 +96,10 @@ export async function handleFiles(ctx: RouteContext): Promise<boolean> {
     sendJson(ctx.res, 400, { error: "Could not read file" });
   }
   return true;
+}
+
+function isEnvFileName(name: string): boolean {
+  return name === ".env" || name.startsWith(".env.");
 }
 
 function escapes(root: string, candidate: string): boolean {

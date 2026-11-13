@@ -41,6 +41,7 @@ type RunRecord = ActiveRun & {
   cwd: string;
   catalog: string;
   mcpServers: EnabledMcpConfig[];
+  artifactPrefix: string;
   stepIndex: number;
   retryCounts: Record<string, number>;
   humanStatus: GateSnapshot["humanStatus"];
@@ -53,6 +54,7 @@ export function startRun(options: {
   steps: ExecutionStep[];
   apiKey: string;
   cwd: string;
+  artifactPrefix: string;
   catalog: string;
   mcpServers: readonly EnabledMcpConfig[];
 }): string {
@@ -74,6 +76,7 @@ export function startRun(options: {
     cwd: options.cwd,
     catalog: options.catalog,
     mcpServers: options.mcpServers.map(copyMcpConfig),
+    artifactPrefix: options.artifactPrefix,
     stepIndex: 0,
     retryCounts: {},
     humanStatus: "idle",
@@ -281,8 +284,9 @@ async function finishSend(
   const after = await snapshotFiles(run.cwd);
   const hits = diffSnapshots(before, after, nodeId);
   for (const hit of hits) {
-    run.artifacts.push(hit);
-    emit(run, "artifact", { path: hit.path, agentNodeId: hit.agentNodeId });
+    const prefixed = { path: `${run.artifactPrefix}/${hit.path}`, agentNodeId: hit.agentNodeId };
+    run.artifacts.push(prefixed);
+    emit(run, "artifact", { path: prefixed.path, agentNodeId: prefixed.agentNodeId });
   }
   run.artifactPaths = run.artifacts.map((hit) => hit.path);
   const elapsedMs = Date.now() - startedAt;

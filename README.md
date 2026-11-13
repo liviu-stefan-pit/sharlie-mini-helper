@@ -30,9 +30,9 @@ The canvas has three node types:
 - **Skill** — choose a discovered `SKILL.md` or type a custom path. The card shows the skill title and description.
 - **Human** — a review step with notes, an artifact list, and approve, redo, and decline actions.
 
-Save writes the current graph to `data/pipelines/<id>.json`. Load opens a pipeline you already saved.
+Save writes `<workspace>/<id>/.sharlie/workflow.json`. Load opens a pipeline you already saved.
 
-Pipelines are version 1 JSON. Files matching `data/pipelines/*.json` are listed in `.gitignore`.
+Pipelines are version 1 JSON.
 
 ## Run
 

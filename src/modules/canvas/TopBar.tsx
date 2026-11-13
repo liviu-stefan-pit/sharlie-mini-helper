@@ -24,6 +24,7 @@ export function TopBar({
   workspaceValid,
   workspacePath,
   workspaceError,
+  workspaceReady,
   notice,
   runPhase,
   onRun,
@@ -46,6 +47,7 @@ export function TopBar({
   workspaceValid: boolean;
   workspacePath: string | null;
   workspaceError?: string;
+  workspaceReady: boolean;
   notice: { tone: "ok" | "err"; text: string } | null;
   runPhase: "idle" | "connecting" | "running" | "paused";
   onRun: () => void;
@@ -79,7 +81,13 @@ export function TopBar({
           Human
         </button>
       </div>
-      <button type="button" className={primaryButtonClass} onClick={onSave} disabled={saving}>
+      <button
+        type="button"
+        className={primaryButtonClass}
+        onClick={onSave}
+        disabled={saving || !workspaceReady}
+        title={workspaceReady ? undefined : "Select a workspace in Settings"}
+      >
         {saving ? "Saving" : "Save"}
       </button>
       <label className="flex items-center gap-1 text-xs text-zinc-500">
@@ -88,6 +96,8 @@ export function TopBar({
           aria-label="Load pipeline"
           className="max-w-40 rounded-md border border-zinc-200 bg-white px-2 py-1 text-xs text-zinc-800 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
           value={currentId ?? ""}
+          disabled={!workspaceReady}
+          title={workspaceReady ? undefined : "Select a workspace in Settings"}
           onChange={(event) => {
             if (event.target.value) onLoad(event.target.value);
           }}
@@ -104,8 +114,8 @@ export function TopBar({
         type="button"
         className={ghostButtonClass}
         onClick={onRun}
-        disabled={running || paused}
-        title={paused ? "Waiting for review" : undefined}
+        disabled={!workspaceReady || running || paused}
+        title={!workspaceReady ? "Select a workspace in Settings" : paused ? "Waiting for review" : undefined}
       >
         {running ? "Running" : "Run"}
       </button>

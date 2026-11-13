@@ -2,13 +2,14 @@
  * Responsibility: notice files a local agent created or updated.
  * Inputs: a working directory, and two mtime snapshots from that directory.
  * Outputs: relative posix paths mapped to mtime, and artifact hits for changes.
+ * The .sharlie meta folder is skipped.
  */
 import fs from "node:fs/promises";
 import path from "node:path";
 
 export type ArtifactHit = { path: string; agentNodeId: string };
 
-const SKIP_SEGMENTS = new Set(["node_modules", "dist", ".git"]);
+const SKIP_SEGMENTS = new Set(["node_modules", "dist", ".git", ".sharlie"]);
 const FILE_CAP = 8000;
 
 export async function snapshotFiles(cwd: string): Promise<Map<string, number>> {

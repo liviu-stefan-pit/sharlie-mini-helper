@@ -3,6 +3,7 @@
  * Inputs: POST /api/runs, POST /api/runs/:id/decision, GET /api/runs/:id/events, GET /api/models.
  * Outputs: a run id, a decision acknowledgement, a server-sent event stream, and the model list.
  */
+import fs from "node:fs/promises";
 import type { ServerResponse } from "node:http";
 import { listModels } from "../../src/modules/cursor/adapter";
 import type { PipelineDocument, PipelineEdge, PipelineNode } from "../../src/modules/graph/types";
@@ -15,9 +16,11 @@ import {
   scanLibrary,
 } from "../../src/modules/library";
 import { decideRun, runExists, startRun, subscribeRun, type RunStreamEvent } from "../../src/modules/runs/engine";
+import { isSafePipelineId, workflowDir } from "../../src/modules/storage/pipelines";
 import { readJson, sendJson } from "../http";
 import { loadEnv } from "../loadEnv";
 import type { RouteContext } from "./context";
+import { requireWorkspace } from "./workspace";
 
 const TERMINAL = new Set(["paused", "done", "error", "stopped"]);
 
@@ -48,8 +51,14 @@ export async function handleRuns(ctx: RouteContext): Promise<boolean> {
       sendJson(ctx.res, 405, { error: "Method not allowed" });
       return true;
     }
+    const workspace = await requireWorkspace(ctx);
+    if (!workspace) return true;
     try {
       const doc = coercePipeline(await readJson(ctx.req));
+      if (!isSafePipelineId(doc.id)) {
+        sendJson(ctx.res, 400, { error: "Save the workflow before running it" });
+        return true;
+      }
       const steps = resolvePipeline(doc);
       loadEnv();
       const apiKey = process.env.CURSOR_API_KEY?.trim() ?? "";
@@ -58,10 +67,13 @@ export async function handleRuns(ctx: RouteContext): Promise<boolean> {
         return true;
       }
       const library = await loadEnabledLibrary(ctx.appRoot);
+      const cwd = workflowDir(workspace, doc.id);
+      await fs.mkdir(cwd, { recursive: true });
       const id = startRun({
         steps,
         apiKey,
-        cwd: ctx.appRoot,
+        cwd,
+        artifactPrefix: doc.id,
         catalog: library.catalog,
         mcpServers: library.mcpServers,
       });

@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "concurrently \"vite\" \"tsx watch server/index.ts\"",
     "build": "tsc --noEmit && vite build",
-    "test": "node --import tsx --test tests/skills.test.ts tests/graph.test.ts tests/human-gate.test.ts tests/library.test.ts tests/mcp-servers.test.ts tests/agents.test.ts tests/workspace.test.ts",
+    "test": "node --import tsx --test tests/skills.test.ts tests/graph.test.ts tests/human-gate.test.ts tests/library.test.ts tests/mcp-servers.test.ts tests/agents.test.ts tests/workspace.test.ts tests/pipelines-storage.test.ts",
     "start": "tsx server/index.ts"
   },
   "dependencies": {

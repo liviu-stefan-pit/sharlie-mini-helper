@@ -81,6 +81,7 @@ function Editor() {
   const [previewFile, setPreviewFile] = useState<string | null>(null);
   const [tokenPill, setTokenPill] = useState({ run: 0, session: 0 });
   const [workspace, setWorkspace] = useState<WorkspaceStatus>({ path: null, valid: false });
+  const workspaceReady = workspace.valid;
   const spawn = useRef(0);
   const sourceRef = useRef<EventSource | null>(null);
   const generationRef = useRef(0);
@@ -125,10 +126,14 @@ function Editor() {
   }, [agentBusy, setNodes]);
 
   useEffect(() => {
+    if (!workspaceReady) {
+      setPipelines([]);
+      return;
+    }
     void fetchPipelines()
       .then(setPipelines)
       .catch(() => setPipelines([]));
-  }, []);
+  }, [workspaceReady, workspace.path]);
 
   useEffect(() => {
     void fetchWorkspace()
@@ -196,6 +201,16 @@ function Editor() {
     },
     [getNodes, setEdges],
   );
+
+  function onWorkspaceChanged(status: WorkspaceStatus) {
+    setWorkspace(status);
+    setCurrentId(null);
+    setName("Untitled");
+    setNodes([]);
+    setEdges([]);
+    setSelectedId(null);
+    setPreviewFile(null);
+  }
 
   function pipelineDocument(): PipelineDocument {
     return {
@@ -338,6 +353,7 @@ function Editor() {
             workspaceValid={workspace.valid}
             workspacePath={workspace.path}
             workspaceError={workspace.error}
+            workspaceReady={workspaceReady}
             notice={notice}
             runPhase={runPhase}
             onRun={onRun}
@@ -368,7 +384,11 @@ function Editor() {
             </ReactFlow>
             {nodes.length === 0 && (
               <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-                <p className="text-sm text-zinc-400">Add an Agent or Human node to start a pipeline.</p>
+                <p className="text-sm text-zinc-400">
+                  {workspaceReady
+                    ? "Add an Agent or Human node to start a pipeline."
+                    : "Select a workspace in Settings to start."}
+                </p>
               </div>
             )}
             {selected && <Inspector node={selected} onClose={closeInspector} />}
@@ -381,7 +401,7 @@ function Editor() {
           open={settingsOpen}
           onClose={() => setSettingsOpen(false)}
           onKeySaved={loadModels}
-          onWorkspaceChanged={setWorkspace}
+          onWorkspaceChanged={onWorkspaceChanged}
         />
         <LibraryModal open={libraryOpen} onClose={() => setLibraryOpen(false)} />
       </ModelsContext.Provider>
