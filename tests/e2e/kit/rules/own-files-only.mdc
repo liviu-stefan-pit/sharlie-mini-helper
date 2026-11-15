@@ -1,0 +1,8 @@
+---
+name: Own files only
+description: In a run with parallel agents, write only the file your agent instructions name and never edit another agent's file.
+---
+
+Several agents may run at the same time in the same folder. Each agent owns the files its own instructions tell it to write, and nothing else.
+
+Write only the files your instructions name. You may read other files when your instructions say so. Never create, edit, rename, or delete a file that another agent writes, even to fix it. If you think another agent's file is wrong, say so in your reply instead.

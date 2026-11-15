@@ -24,6 +24,7 @@ Read `AGENTS.md` and `ARCHITECTURE.md` before structural edits.
 - Library UI is a top-bar modal (`LibraryModal`), not a node.
 - Do not add UI test suites. New parse, resolve, human-gate, library, or agent-file behavior needs a `node:test` file under `tests/`.
 - `npm test` lists `tests/skills.test.ts`, `tests/graph.test.ts`, `tests/human-gate.test.ts`, `tests/schedule.test.ts`, `tests/run-engine.test.ts`, `tests/library.test.ts`, `tests/mcp-servers.test.ts`, `tests/agents.test.ts`, `tests/workspace.test.ts`, `tests/pipelines-storage.test.ts`, `tests/sharlie.test.ts`, `tests/sharlie-import.test.ts`, `tests/workflow-health.test.ts`, `tests/credentials.test.ts`, and `tests/agent-node-defaults.test.ts` explicitly so Windows does not depend on shell globbing.
+- `npm run test:e2e` runs `tests/e2e/workflows.e2e.test.ts` against the real Cursor SDK with the stored key. It uses real tokens and is not part of `npm test`. The kit is `tests/e2e/kit/`.
 
 ## File map
 

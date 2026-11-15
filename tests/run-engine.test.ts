@@ -156,6 +156,31 @@ describe("run engine with several inputs", () => {
     assert.ok(run.runners.every((runner) => runner.disposed));
   });
 
+  test("createRunner receives the agent node id", async () => {
+    const ids: string[] = [];
+    const sends: PendingSend[] = [];
+    const id = startRun({
+      steps: [agent("a"), agent("b")],
+      apiKey: "test-key",
+      cwd: dir,
+      artifactPrefix: "wf-runner-ids",
+      catalog: "CATALOG",
+      mcpServers: [],
+      createRunner: (nodeId) => {
+        ids.push(nodeId);
+        return new FakeRunner(sends);
+      },
+    });
+    const events: RunStreamEvent[] = [];
+    const subscription = subscribeRun(id, (event) => events.push(event));
+    assert.ok(subscription);
+    events.push(...subscription.events);
+    await until(() => sends.length === 2, "both sends");
+    assert.deepEqual([...ids].sort(), ["a", "b"]);
+    for (const send of sends) finish(send, "out");
+    await until(() => hasEvent(events, "done"), "done");
+  });
+
   test("a waiting human does not block another branch, and Redo one goes to the right runner", async () => {
     const run = launch([agent("a"), agent("b"), agent("x"), human("h", ["a", "b"]), agent("y", ["h"])]);
     await until(() => run.sends.length === 3, "A, B and X");

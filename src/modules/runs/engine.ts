@@ -64,7 +64,7 @@ type RunRecord = ActiveRun & {
   listeners: Set<(event: RunStreamEvent) => void>;
   schedule: ScheduleState;
   runners: Map<string, CursorAgentRunner>;
-  createRunner: () => CursorAgentRunner;
+  createRunner: (nodeId: string) => CursorAgentRunner;
   apiKey: string;
   cwd: string;
   catalog: string;
@@ -90,8 +90,8 @@ type RunLaunch = {
   artifactPrefix: string;
   catalog: string;
   mcpServers: readonly EnabledMcpConfig[];
-  /** Tests pass a fake runner. Defaults to the Cursor runner. */
-  createRunner?: () => CursorAgentRunner;
+  /** Tests pass a fake or wrapped runner. Receives the agent node id. Defaults to the Cursor runner. */
+  createRunner?: (nodeId: string) => CursorAgentRunner;
 };
 
 const runs = new Map<string, RunRecord>();
@@ -395,7 +395,7 @@ async function failNode(run: RunRecord, nodeId: string, message: string, retryCo
 async function ensureRunner(run: RunRecord, step: AgentStep): Promise<CursorAgentRunner> {
   const existing = run.runners.get(step.nodeId);
   if (existing) return existing;
-  const runner = run.createRunner();
+  const runner = run.createRunner(step.nodeId);
   run.runners.set(step.nodeId, runner);
   const selection = await resolveRunSelection(run, step);
   await runner.start({

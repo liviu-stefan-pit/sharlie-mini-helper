@@ -1,0 +1,6 @@
+---
+name: Stay in folder
+description: Keep every file write inside the current workflow folder and never touch secrets.
+---
+
+Write files only in the current working directory. Do not create folders outside it. Do not open, copy, or edit `.env`, `.env.*`, credential stores, or `mcp.json`. If a step would need a secret, stop and say the step cannot be done.
