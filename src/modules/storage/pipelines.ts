@@ -252,6 +252,8 @@ function parseAgentData(value: unknown, index: number): AgentNodeData {
   }
   const data: AgentNodeData = {
     modelId: requiredString(value.modelId, `nodes[${index}].modelId`),
+    effort: missingString(value.effort, `nodes[${index}].effort`),
+    effortParamId: missingString(value.effortParamId, `nodes[${index}].effortParamId`),
     agentPath: missingString(value.agentPath, `nodes[${index}].agentPath`),
     agentName: missingString(value.agentName, `nodes[${index}].agentName`),
     status: oneOf(value.status, AGENT_STATUSES, `nodes[${index}].status`),

@@ -9,6 +9,7 @@ import {
   PipelineValidationError,
   listPipelines,
   newPipelineId,
+  normalizePipeline,
   readPipeline,
   workflowDir,
   writePipeline,
@@ -26,6 +27,8 @@ function document(id: string, name = "Flow"): PipelineDocument {
         position: { x: 0, y: 0 },
         data: {
           modelId: "auto",
+          effort: "",
+          effortParamId: "",
           agentPath: "agents/a.md",
           agentName: "",
           status: "idle",
@@ -117,6 +120,56 @@ describe("workflow folder storage", () => {
         return true;
       },
     );
+  });
+
+  test("loads a missing effort as blank and keeps a saved effort", () => {
+    const base = {
+      version: 1,
+      name: "Flow",
+      nodes: [
+        {
+          id: "agent-1",
+          type: "agent",
+          position: { x: 0, y: 0 },
+          data: {
+            modelId: "auto",
+            agentPath: "agents/a.md",
+            agentName: "",
+            status: "idle",
+            elapsedMs: 0,
+            retryCount: 0,
+            tokens: {},
+          },
+        },
+      ],
+      edges: [],
+    };
+    const missing = normalizePipeline(base, "flow-a");
+    const missingNode = missing.nodes[0];
+    assert.equal(missingNode?.type, "agent");
+    if (missingNode?.type === "agent") {
+      assert.equal(missingNode.data.effort, "");
+      assert.equal(missingNode.data.effortParamId, "");
+    }
+
+    const saved = normalizePipeline(
+      {
+        ...base,
+        nodes: [
+          {
+            ...base.nodes[0],
+            data: { ...base.nodes[0].data, effort: "high", effortParamId: "reasoning_effort" },
+          },
+        ],
+      },
+      "flow-a",
+    );
+    const savedNode = saved.nodes[0];
+    assert.equal(savedNode?.type, "agent");
+    if (savedNode?.type === "agent") {
+      assert.equal(savedNode.data.effort, "high");
+      assert.equal(savedNode.data.effortParamId, "reasoning_effort");
+    }
   });
 
   test("builds a slug id from the workflow name", () => {

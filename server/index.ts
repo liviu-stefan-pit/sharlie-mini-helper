@@ -6,6 +6,7 @@
 import { createServer } from "node:http";
 import { LibraryError } from "../src/modules/library";
 import { PipelineValidationError } from "../src/modules/storage/pipelines";
+import { loadApiKeyIntoEnv } from "./credentials";
 import { JsonError, sendJson } from "./http";
 import { loadEnv } from "./loadEnv";
 import type { RouteContext } from "./routes/context";
@@ -19,27 +20,35 @@ import { handleSharlie } from "./routes/sharlie";
 import { handleSkills } from "./routes/skills";
 import { handleWorkspace } from "./routes/workspace";
 
-loadEnv();
-
 const appRoot = process.cwd();
 const port = 8787;
 const host = "127.0.0.1";
 
-const server = createServer((req, res) => {
-  void handleRequest(req, res).catch((error: unknown) => {
-    if (res.headersSent) return;
-    if (error instanceof LibraryError) {
-      sendJson(res, error.status, { error: error.message });
-      return;
-    }
-    if (error instanceof PipelineValidationError || error instanceof JsonError) {
-      sendJson(res, 400, { error: error.message });
-      return;
-    }
-    console.error("request failed");
-    sendJson(res, 500, { error: "Internal error" });
+async function start(): Promise<void> {
+  const shellHadKey = Boolean(process.env.CURSOR_API_KEY?.trim());
+  loadEnv();
+  await loadApiKeyIntoEnv(appRoot, { shellHadKey });
+
+  const server = createServer((req, res) => {
+    void handleRequest(req, res).catch((error: unknown) => {
+      if (res.headersSent) return;
+      if (error instanceof LibraryError) {
+        sendJson(res, error.status, { error: error.message });
+        return;
+      }
+      if (error instanceof PipelineValidationError || error instanceof JsonError) {
+        sendJson(res, 400, { error: error.message });
+        return;
+      }
+      console.error("request failed");
+      sendJson(res, 500, { error: "Internal error" });
+    });
   });
-});
+
+  server.listen(port, host, () => {
+    console.log(`Sharlie Easy Flow API listening on http://${host}:${port}`);
+  });
+}
 
 async function handleRequest(req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse) {
   const url = new URL(req.url ?? "/", `http://${host}:${port}`);
@@ -57,6 +66,4 @@ async function handleRequest(req: import("node:http").IncomingMessage, res: impo
   sendJson(res, 404, { error: "Not found" });
 }
 
-server.listen(port, host, () => {
-  console.log(`Sharlie Easy Flow API listening on http://${host}:${port}`);
-});
+void start();

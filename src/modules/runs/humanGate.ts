@@ -1,90 +1,72 @@
 /**
- * Responsibility: pure pause/resume decisions for a human step.
- * Inputs: a gate snapshot and a decision.
- * Outputs: the next snapshot and one effect. No SDK, filesystem, or server calls.
+ * Responsibility: pure review decisions for one human node of a run.
+ * Inputs: the schedule state, the human node id, a decision, and for Redo one the agent to redo.
+ * Outputs: the next schedule state and one effect. No SDK, filesystem, or server calls.
  */
+import { reviewSources, stepOf, withStatus, type NodeStatus, type ScheduleState } from "./schedule";
 
 export type GateDecision = "approve" | "redo" | "decline";
-
-export type GateStep = { kind: "agent" | "human"; nodeId: string };
-
-export type GateSnapshot = {
-  status: "running" | "paused" | "done" | "error" | "stopped";
-  stepIndex: number;
-  steps: GateStep[];
-  retryCounts: Record<string, number>;
-  outputs: Record<string, string>;
-  humanStatus: "idle" | "waiting" | "approved" | "declined";
-};
 
 export type GateEffect =
   | { type: "resume" }
   | { type: "halt" }
-  | { type: "resend"; nodeId: string; retryCount: number }
+  | { type: "resend"; nodes: { nodeId: string; retryCount: number }[] }
   | { type: "reject"; message: string };
 
-export function enterHuman(snapshot: GateSnapshot): GateSnapshot {
-  return {
-    status: "paused",
-    stepIndex: snapshot.stepIndex,
-    steps: snapshot.steps,
-    retryCounts: snapshot.retryCounts,
-    outputs: snapshot.outputs,
-    humanStatus: "waiting",
-  };
+export function enterHuman(state: ScheduleState, humanId: string): ScheduleState {
+  return withStatus(state, humanId, "waiting");
 }
 
+/**
+ * Approve marks the human approved. Decline marks it declined and halts the run.
+ * Redo re-sends every agent the human reviews, or only `redoNodeId` when given,
+ * marks those agents `redoing`, bumps their retry counts, and puts the human back to `idle`
+ * until they are done. Approve and Redo are rejected while a reviewed agent is still running.
+ */
 export function applyHumanDecision(
-  snapshot: GateSnapshot,
+  state: ScheduleState,
+  humanId: string,
   decision: GateDecision,
-): { snapshot: GateSnapshot; effect: GateEffect } {
-  const step = snapshot.steps[snapshot.stepIndex];
-  if (snapshot.status !== "paused" || !step || step.kind !== "human") {
-    return { snapshot, effect: { type: "reject", message: "Run is not paused" } };
+  redoNodeId?: string,
+): { state: ScheduleState; effect: GateEffect } {
+  const reject = (message: string) => ({ state, effect: { type: "reject" as const, message } });
+  const step = stepOf(state, humanId);
+  if (!step || step.kind !== "human" || state.nodeStatus[humanId] !== "waiting") {
+    return reject("Node is not waiting for review");
   }
-  if (decision === "approve") {
-    const stepIndex = snapshot.stepIndex + 1;
-    const pastEnd = stepIndex >= snapshot.steps.length;
-    return {
-      snapshot: {
-        ...snapshot,
-        humanStatus: "approved",
-        status: pastEnd ? "done" : "running",
-        stepIndex,
-      },
-      effect: { type: "resume" },
-    };
+  if (redoNodeId !== undefined && decision !== "redo") {
+    return reject("Only Redo takes an agent");
   }
   if (decision === "decline") {
-    return {
-      snapshot: { ...snapshot, humanStatus: "declined", status: "stopped" },
-      effect: { type: "halt" },
-    };
+    return { state: withStatus(state, humanId, "declined"), effect: { type: "halt" } };
   }
-  const upstream = earlierAgent(snapshot.steps, snapshot.stepIndex);
-  if (!upstream) {
-    return { snapshot, effect: { type: "reject", message: "No upstream agent" } };
-  }
-  const retryCount = (snapshot.retryCounts[upstream.nodeId] ?? 0) + 1;
-  return {
-    snapshot: {
-      ...snapshot,
-      status: "paused",
-      humanStatus: "waiting",
-      retryCounts: { ...snapshot.retryCounts, [upstream.nodeId]: retryCount },
-    },
-    effect: {
-      type: "resend",
-      nodeId: upstream.nodeId,
-      retryCount,
-    },
-  };
-}
 
-function earlierAgent(steps: GateStep[], stepIndex: number): GateStep | undefined {
-  for (let index = stepIndex - 1; index >= 0; index -= 1) {
-    const step = steps[index];
-    if (step?.kind === "agent") return step;
+  const sources = reviewSources(state, humanId);
+  const busy = sources.some((id) => {
+    const status = state.nodeStatus[id];
+    return status === "running" || status === "redoing";
+  });
+
+  if (decision === "approve") {
+    if (busy) return reject("Upstream agent is still running");
+    return { state: withStatus(state, humanId, "approved"), effect: { type: "resume" } };
   }
-  return undefined;
+
+  if (sources.length === 0) return reject("No upstream agent");
+  if (redoNodeId !== undefined && !sources.includes(redoNodeId)) {
+    return reject("Agent is not reviewed by this node");
+  }
+  if (busy) return reject("Upstream agent is still running");
+
+  const targets = redoNodeId === undefined ? sources : [redoNodeId];
+  const nodeStatus: Record<string, NodeStatus> = { ...state.nodeStatus, [humanId]: "idle" };
+  const retryCounts: Record<string, number> = { ...state.retryCounts };
+  const nodes: { nodeId: string; retryCount: number }[] = [];
+  for (const nodeId of targets) {
+    const retryCount = (retryCounts[nodeId] ?? 0) + 1;
+    retryCounts[nodeId] = retryCount;
+    nodeStatus[nodeId] = "redoing";
+    nodes.push({ nodeId, retryCount });
+  }
+  return { state: { ...state, nodeStatus, retryCounts }, effect: { type: "resend", nodes } };
 }

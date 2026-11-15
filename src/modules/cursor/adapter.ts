@@ -2,16 +2,29 @@
  * Responsibility: local Cursor agent runs and the account model list.
  * Inputs: API key, working directory, model id, enabled MCP servers, and a prompt.
  * Outputs: assistant text, token events from SDK usage messages, and send status.
+ * cancel() stops the active SDK run. dispose() still drops the agent when send has not started.
  * This is the only module that imports @cursor/sdk.
  */
-import { Agent, Cursor, CursorAgentError, type SDKAgent, type SDKMessage } from "@cursor/sdk";
+import { Agent, Cursor, CursorAgentError, type Run, type SDKAgent, type SDKMessage } from "@cursor/sdk";
 import type { EnabledMcpConfig } from "../library/types";
 import { toSdkMcpServers } from "./mcpServers";
+import { effortListing, modelSelection } from "./models";
+
+export type ListedModel = {
+  id: string;
+  label: string;
+  effort: { value: string; label: string }[];
+  /** "" when the model has no effort parameter. */
+  effortParamId: string;
+};
 
 export type RunnerStartOptions = {
   apiKey: string;
   cwd: string;
   modelId: string;
+  effort: string;
+  /** "" falls back to the catalog id, then "effort", inside modelSelection. */
+  effortParamId: string;
   mcpServers: readonly EnabledMcpConfig[];
 };
 
@@ -29,6 +42,8 @@ export type SendResult = {
 export interface CursorAgentRunner {
   start(options: RunnerStartOptions): Promise<void>;
   send(prompt: string, onEvent: (event: RunnerEvent) => void): Promise<SendResult>;
+  /** Cancel the active SDK run. A no-op when send has not started a run yet. */
+  cancel(): Promise<void>;
   dispose(): Promise<void>;
 }
 
@@ -36,16 +51,22 @@ export function createCursorAgentRunner(): CursorAgentRunner {
   return new LocalCursorRunner();
 }
 
-export async function listModels(apiKey: string): Promise<{ id: string; label: string }[]> {
+export async function listModels(apiKey: string): Promise<ListedModel[]> {
   const models = await Cursor.models.list({ apiKey });
-  return models.map((model) => ({
-    id: model.id,
-    label: model.displayName.trim() || model.id,
-  }));
+  return models.map((model) => {
+    const listing = effortListing(model);
+    return {
+      id: model.id,
+      label: model.displayName.trim() || model.id,
+      effort: listing.choices,
+      effortParamId: listing.paramId,
+    };
+  });
 }
 
 class LocalCursorRunner implements CursorAgentRunner {
   private agent: SDKAgent | undefined;
+  private activeRun: Run | undefined;
   private startupError: string | undefined;
   private startTask: Promise<void> | undefined;
   private disposed = false;
@@ -71,38 +92,53 @@ class LocalCursorRunner implements CursorAgentRunner {
     }
 
     let text = "";
-    let run;
+    let run: Run;
     try {
       run = await agent.send(prompt);
     } catch (error) {
       return failureFrom(error, "");
     }
+    if (this.disposed) {
+      await cancelSdkRun(run);
+      return { status: "error", text: "", error: "Runner disposed", failure: "startup" };
+    }
 
+    this.activeRun = run;
     let streamError: unknown;
     try {
-      for await (const message of run.stream()) {
-        text += publishMessage(message, onEvent);
+      try {
+        for await (const message of run.stream()) {
+          text += publishMessage(message, onEvent);
+        }
+      } catch (error) {
+        streamError = error;
       }
-    } catch (error) {
-      streamError = error;
-    }
 
-    try {
-      const result = await run.wait();
-      if (streamError) return failureFrom(streamError, text);
-      if (result.status === "error" || result.status === "cancelled") {
-        return {
-          status: "error",
-          text,
-          error: result.error?.message || (result.status === "cancelled" ? "Run cancelled" : "Run failed"),
-          failure: "run",
-        };
+      try {
+        const result = await run.wait();
+        if (streamError) return failureFrom(streamError, text);
+        if (result.status === "error" || result.status === "cancelled") {
+          return {
+            status: "error",
+            text,
+            error: result.error?.message || (result.status === "cancelled" ? "Run cancelled" : "Run failed"),
+            failure: "run",
+          };
+        }
+        return { status: "finished", text, failure: "none" };
+      } catch (error) {
+        if (streamError) return failureFrom(streamError, text);
+        return failureFrom(error, text);
       }
-      return { status: "finished", text, failure: "none" };
-    } catch (error) {
-      if (streamError) return failureFrom(streamError, text);
-      return failureFrom(error, text);
+    } finally {
+      if (this.activeRun === run) this.activeRun = undefined;
     }
+  }
+
+  async cancel(): Promise<void> {
+    const run = this.activeRun;
+    if (!run) return;
+    await cancelSdkRun(run);
   }
 
   async dispose(): Promise<void> {
@@ -132,7 +168,7 @@ class LocalCursorRunner implements CursorAgentRunner {
     try {
       created = await Agent.create({
         apiKey: options.apiKey,
-        model: { id: options.modelId },
+        model: modelSelection(options.modelId, options.effort, options.effortParamId),
         local: {
           cwd: options.cwd,
           settingSources: [],
@@ -152,6 +188,15 @@ class LocalCursorRunner implements CursorAgentRunner {
       return;
     }
     this.agent = created;
+  }
+}
+
+async function cancelSdkRun(run: Run): Promise<void> {
+  if (!run.supports("cancel")) return;
+  try {
+    await run.cancel();
+  } catch {
+    // dispose still drops the agent
   }
 }
 

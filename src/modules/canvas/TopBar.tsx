@@ -1,7 +1,7 @@
 /**
  * Responsibility: slim command row for the canvas.
  * Inputs: pipeline name, saved pipelines, workspace status, theme, and actions.
- * Outputs: add, save, load, import, export, run, theme, library, dependencies, and settings controls.
+ * Outputs: add, save, load, import, export, run, stop, resume, theme, library, dependencies, and settings controls.
  */
 import type { NodeKind, PipelineSummary } from "../graph/types";
 import type { Theme } from "./theme";
@@ -30,10 +30,13 @@ export function TopBar({
   workspaceValid,
   workspacePath,
   workspaceError,
+  workspaceTemporary,
   workspaceReady,
   notice,
   runPhase,
   onRun,
+  onStop,
+  onStartOver,
   runTotal,
   sessionTotal,
 }: {
@@ -59,25 +62,34 @@ export function TopBar({
   workspaceValid: boolean;
   workspacePath: string | null;
   workspaceError?: string;
+  workspaceTemporary: boolean;
   workspaceReady: boolean;
   notice: { tone: "ok" | "err"; text: string } | null;
-  runPhase: "idle" | "connecting" | "running" | "paused";
+  runPhase: "idle" | "connecting" | "running" | "paused" | "stopped";
   onRun: () => void;
+  onStop: () => void;
+  onStartOver: () => void;
   runTotal: number;
   sessionTotal: number;
 }) {
   const running = runPhase === "connecting" || runPhase === "running";
   const paused = runPhase === "paused";
+  const stopped = runPhase === "stopped";
+  const live = running || paused;
   return (
     <header className="flex w-full min-w-0 flex-wrap items-center gap-2 border-b border-zinc-200 bg-white px-3 py-2 dark:border-zinc-800 dark:bg-zinc-950">
       <span className="text-[13px] font-semibold tracking-tight">Sharlie Easy Flow</span>
       <button
         type="button"
-        className={workspaceValid && workspaceName ? ghostButtonClass : `${ghostButtonClass} text-red-600 dark:text-red-600`}
-        title={workspaceButtonTitle(workspaceName, workspaceValid, workspacePath, workspaceError)}
+        className={
+          workspaceTemporary || (workspaceValid && workspaceName)
+            ? ghostButtonClass
+            : `${ghostButtonClass} text-red-600 dark:text-red-600`
+        }
+        title={workspaceButtonTitle(workspaceName, workspaceValid, workspacePath, workspaceError, workspaceTemporary)}
         onClick={onOpenSettings}
       >
-        {workspaceButtonText(workspaceName, workspaceValid)}
+        {workspaceButtonText(workspaceName, workspaceValid, workspaceTemporary)}
       </button>
       <input
         aria-label="Pipeline name"
@@ -135,8 +147,22 @@ export function TopBar({
         disabled={!workspaceReady || running || paused}
         title={!workspaceReady ? "Select a workspace in Settings" : paused ? "Waiting for review" : undefined}
       >
-        {running ? "Running" : "Run"}
+        {running ? "Running" : stopped ? "Resume" : "Run"}
       </button>
+      {stopped && (
+        <button type="button" className={ghostButtonClass} onClick={onStartOver} disabled={!workspaceReady}>
+          Start over
+        </button>
+      )}
+      {live && (
+        <button
+          type="button"
+          className="rounded-md border border-red-700 bg-red-600 px-2 py-1 text-xs text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-40"
+          onClick={onStop}
+        >
+          Stop
+        </button>
+      )}
       <span className="rounded-full border border-zinc-200 px-2 py-1 font-mono text-[11px] text-zinc-500 dark:border-zinc-700">
         run {runTotal} · session {sessionTotal}
       </span>
@@ -170,7 +196,14 @@ export function TopBar({
   );
 }
 
-function workspaceButtonText(workspaceName: string | null, workspaceValid: boolean): string {
+const temporaryWorkspaceNote = "Temporary folder. Windows may clean it up. Browse to pick a permanent folder.";
+
+function workspaceButtonText(
+  workspaceName: string | null,
+  workspaceValid: boolean,
+  workspaceTemporary: boolean,
+): string {
+  if (workspaceTemporary) return "Temp workspace";
   if (workspaceValid && workspaceName) return workspaceName;
   if (workspaceName) return "Workspace missing";
   return "Select workspace";
@@ -181,7 +214,11 @@ function workspaceButtonTitle(
   workspaceValid: boolean,
   workspacePath: string | null,
   workspaceError: string | undefined,
+  workspaceTemporary: boolean,
 ): string | undefined {
+  if (workspaceTemporary) {
+    return workspacePath ? `${workspacePath}\n${temporaryWorkspaceNote}` : temporaryWorkspaceNote;
+  }
   if (workspaceValid && workspaceName && workspacePath) return workspacePath;
   if (workspaceName) return workspaceError;
   return undefined;

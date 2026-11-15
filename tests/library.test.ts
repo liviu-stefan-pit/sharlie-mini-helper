@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -8,10 +9,17 @@ import {
   applyCatalog,
   buildCatalogPrompt,
   filterSelection,
+  browseDirectoryFromPicks,
   forgetImport,
   importLibraryItem,
+  importLibraryItems,
   loadEnabledMcpConfigs,
+  parseDialogPaths,
+  readLastBrowseDir,
+  rememberBrowseDirectory,
   skillFileInFolder,
+  skillFilesInFolders,
+  realFiles,
   readLibraryBody,
   readSelection,
   scanLibrary,
@@ -517,6 +525,214 @@ describe("library import", () => {
   });
 });
 
+describe("dialog paths", () => {
+  test("parses one path, several paths, and blank lines", () => {
+    assert.deepEqual(parseDialogPaths(""), []);
+    assert.deepEqual(parseDialogPaths("   \r\n\n"), []);
+    assert.deepEqual(parseDialogPaths("C:\\skills\\one"), ["C:\\skills\\one"]);
+    assert.deepEqual(parseDialogPaths("C:\\skills\\one\r\n\r\nC:\\skills\\two\n"), [
+      "C:\\skills\\one",
+      "C:\\skills\\two",
+    ]);
+  });
+
+  test("powershell writes one folder as one line and two folders as two lines", async () => {
+    const one = await emitPickedFolders(String.raw`new string[] { @"C:\skills\one" }`);
+    assert.deepEqual(dialogLines(one), ["C:\\skills\\one"]);
+    assert.deepEqual(parseDialogPaths(one), ["C:\\skills\\one"]);
+
+    const two = await emitPickedFolders(String.raw`new string[] { @"C:\skills\one", @"C:\skills\two" }`);
+    assert.deepEqual(dialogLines(two), ["C:\\skills\\one", "C:\\skills\\two"]);
+    assert.deepEqual(parseDialogPaths(two), ["C:\\skills\\one", "C:\\skills\\two"]);
+  });
+
+  test("uses the parent of one folder and the shared parent of several", async () => {
+    const parent = await fs.mkdtemp(path.join(os.tmpdir(), "sharlie-dialog-parent-"));
+    const one = path.join(parent, "one");
+    const two = path.join(parent, "two");
+    try {
+      assert.equal(browseDirectoryFromPicks([]), null);
+      assert.equal(path.resolve(browseDirectoryFromPicks([one]) ?? ""), path.resolve(parent));
+      assert.equal(path.resolve(browseDirectoryFromPicks([one, two]) ?? ""), path.resolve(parent));
+      const mixed = path.join(parent.toLowerCase(), "two");
+      assert.equal(browseDirectoryFromPicks([one, mixed]), path.resolve(parent));
+    } finally {
+      await fs.rm(parent, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("last browse directory", () => {
+  test("remembers a chosen directory, falls back when it is gone, and ignores cancel", async () => {
+    const appLibraryRoot = await fs.mkdtemp(path.join(os.tmpdir(), "sharlie-browse-dir-"));
+    const parent = await fs.mkdtemp(path.join(os.tmpdir(), "sharlie-browse-pick-"));
+    const skillFolder = path.join(parent, "skill");
+    const ruleFile = path.join(parent, "team.mdc");
+    const browseFile = path.join(appLibraryRoot, "browse.json");
+    try {
+      assert.equal(await readLastBrowseDir(appLibraryRoot, "skill"), null);
+      await fs.mkdir(skillFolder);
+      await fs.writeFile(ruleFile, "rule\n", "utf8");
+
+      await rememberBrowseDirectory(appLibraryRoot, "skill", [skillFolder]);
+      assert.equal(path.resolve(await readLastBrowseDir(appLibraryRoot, "skill") ?? ""), path.resolve(parent));
+      const saved = await fs.readFile(browseFile, "utf8");
+
+      await rememberBrowseDirectory(appLibraryRoot, "skill", []);
+      assert.equal(await fs.readFile(browseFile, "utf8"), saved);
+
+      await rememberBrowseDirectory(appLibraryRoot, "rule", [ruleFile]);
+      assert.equal(path.resolve(await readLastBrowseDir(appLibraryRoot, "rule") ?? ""), path.resolve(parent));
+      assert.equal(path.resolve(await readLastBrowseDir(appLibraryRoot, "skill") ?? ""), path.resolve(parent));
+
+      await fs.rm(parent, { recursive: true, force: true });
+      assert.equal(await readLastBrowseDir(appLibraryRoot, "skill"), null);
+      const stored = JSON.parse(await fs.readFile(browseFile, "utf8")) as { skill?: string };
+      assert.equal(path.resolve(stored.skill ?? ""), path.resolve(parent));
+
+      await fs.writeFile(browseFile, "{", "utf8");
+      assert.equal(await readLastBrowseDir(appLibraryRoot, "skill"), null);
+    } finally {
+      await fs.rm(appLibraryRoot, { recursive: true, force: true });
+      await fs.rm(parent, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("skill folder batch", () => {
+  test("resolves each direct SKILL.md and skips invalid folders", async () => {
+    const parent = await fs.mkdtemp(path.join(os.tmpdir(), "sharlie-skill-batch-"));
+    const ready = path.join(parent, "ready");
+    const empty = path.join(parent, "empty");
+    const nested = path.join(parent, "nested");
+    try {
+      await fs.mkdir(ready);
+      await fs.writeFile(path.join(ready, "SKILL.md"), "# Ready\n", "utf8");
+      await fs.mkdir(empty);
+      await fs.mkdir(path.join(nested, "child"), { recursive: true });
+      await fs.writeFile(path.join(nested, "child", "SKILL.md"), "# Nested\n", "utf8");
+      const resolved = await skillFilesInFolders([ready, empty, nested]);
+      assert.deepEqual(resolved.paths, [await fs.realpath(path.join(ready, "SKILL.md"))]);
+      assert.deepEqual(
+        resolved.skipped.map((item) => item.error),
+        ["That folder has no SKILL.md", "That folder has no SKILL.md"],
+      );
+      assert.equal(resolved.skipped[0]?.path, empty);
+      assert.equal(resolved.skipped[1]?.path, nested);
+    } finally {
+      await fs.rm(parent, { recursive: true, force: true });
+    }
+  });
+
+  test("imports several skill files in one request and keeps going after a bad path", async () => {
+    const cursorHome = await fs.mkdtemp(path.join(os.tmpdir(), "sharlie-library-cursor-"));
+    const appLibraryRoot = await fs.mkdtemp(path.join(os.tmpdir(), "sharlie-library-app-"));
+    const sources = await fs.mkdtemp(path.join(os.tmpdir(), "sharlie-library-src-"));
+    const roots = { cursorHome, appLibraryRoot };
+    const alpha = path.join(sources, "alpha.md");
+    const beta = path.join(sources, "beta.md");
+    const missing = path.join(sources, "missing.md");
+    const alphaText = `${skillDoc("Alpha Skill", "First skill")}ALPHA-BODY\n`;
+    const betaText = `${skillDoc("Beta Skill", "Second skill")}BETA-BODY\n`;
+    try {
+      await fs.writeFile(alpha, alphaText, "utf8");
+      await fs.writeFile(beta, betaText, "utf8");
+      const alphaBefore = await fs.readFile(alpha);
+      const betaBefore = await fs.readFile(beta);
+      const result = await importLibraryItems({
+        appLibraryRoot,
+        kind: "skill",
+        paths: [alpha, missing, beta],
+      });
+      assert.deepEqual(
+        result.skills.map((item) => item.title),
+        ["Alpha Skill", "Beta Skill"],
+      );
+      assert.equal(result.skills.every((item) => item.source === "import" && item.enabled), true);
+      assert.equal(result.errors.length, 1);
+      assert.equal(result.errors[0]?.path, missing);
+      assert.equal(result.errors[0]?.error, "Path not found");
+      assert.deepEqual(await fs.readFile(alpha), alphaBefore);
+      assert.deepEqual(await fs.readFile(beta), betaBefore);
+      const snapshot = await scanLibrary(roots);
+      assert.equal(snapshot.skills.some((item) => item.title === "Alpha Skill"), true);
+      assert.equal(snapshot.skills.some((item) => item.title === "Beta Skill"), true);
+      const stored = JSON.parse(await fs.readFile(path.join(appLibraryRoot, "imports.json"), "utf8")) as {
+        skills: string[];
+      };
+      assert.deepEqual(stored.skills, [await fs.realpath(alpha), await fs.realpath(beta)]);
+      const names = await fs.readdir(appLibraryRoot);
+      assert.deepEqual(names.sort(), ["imports.json", "selection.json"]);
+    } finally {
+      await fs.rm(cursorHome, { recursive: true, force: true });
+      await fs.rm(appLibraryRoot, { recursive: true, force: true });
+      await fs.rm(sources, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("rule file batch", () => {
+  test("resolves chosen rule files once each and skips missing ones", async () => {
+    const parent = await fs.mkdtemp(path.join(os.tmpdir(), "sharlie-rule-batch-"));
+    const one = path.join(parent, "one.mdc");
+    const two = path.join(parent, "two.md");
+    const missing = path.join(parent, "missing.mdc");
+    try {
+      await fs.writeFile(one, skillDoc("One", "First rule"), "utf8");
+      await fs.writeFile(two, skillDoc("Two", "Second rule"), "utf8");
+      const resolved = await realFiles([one, missing, two, one, parent]);
+      assert.deepEqual(resolved.paths, [await fs.realpath(one), await fs.realpath(two)]);
+      assert.deepEqual(
+        resolved.skipped.map((item) => [item.path, item.error]),
+        [
+          [missing, "Path not found"],
+          [parent, "Path is not a file"],
+        ],
+      );
+    } finally {
+      await fs.rm(parent, { recursive: true, force: true });
+    }
+  });
+
+  test("imports several rule files in one request and keeps going after a bad path", async () => {
+    const cursorHome = await fs.mkdtemp(path.join(os.tmpdir(), "sharlie-library-cursor-"));
+    const appLibraryRoot = await fs.mkdtemp(path.join(os.tmpdir(), "sharlie-library-app-"));
+    const sources = await fs.mkdtemp(path.join(os.tmpdir(), "sharlie-library-src-"));
+    const roots = { cursorHome, appLibraryRoot };
+    const alpha = path.join(sources, "alpha.mdc");
+    const beta = path.join(sources, "beta.md");
+    const wrong = path.join(sources, "notes.txt");
+    try {
+      await fs.writeFile(alpha, skillDoc("Alpha Rule", "First rule"), "utf8");
+      await fs.writeFile(beta, skillDoc("Beta Rule", "Second rule"), "utf8");
+      await fs.writeFile(wrong, "text\n", "utf8");
+      const result = await importLibraryItems({
+        appLibraryRoot,
+        kind: "rule",
+        paths: [alpha, wrong, beta, alpha],
+      });
+      assert.deepEqual(
+        result.rules.map((item) => item.title),
+        ["Alpha Rule", "Beta Rule"],
+      );
+      assert.equal(result.rules.every((item) => item.source === "import" && item.enabled), true);
+      assert.equal(result.errors.length, 1);
+      assert.equal(result.errors[0]?.path, wrong);
+      const snapshot = await scanLibrary(roots);
+      const enabled = snapshot.rules.filter((item) => item.enabled).map((item) => item.title);
+      assert.deepEqual(enabled.sort(), ["Alpha Rule", "Beta Rule"]);
+      const stored = JSON.parse(await fs.readFile(path.join(appLibraryRoot, "imports.json"), "utf8")) as {
+        rules: string[];
+      };
+      assert.deepEqual(stored.rules, [await fs.realpath(alpha), await fs.realpath(beta)]);
+    } finally {
+      await fs.rm(cursorHome, { recursive: true, force: true });
+      await fs.rm(appLibraryRoot, { recursive: true, force: true });
+      await fs.rm(sources, { recursive: true, force: true });
+    }
+  });
+});
+
 async function writeSkill(cursorHome: string, segments: string[], name: string, description: string): Promise<void> {
   const dir = path.join(cursorHome, "skills", ...segments);
   await fs.mkdir(dir, { recursive: true });
@@ -536,4 +752,50 @@ async function writeRule(
 
 function skillDoc(name: string, description: string): string {
   return ["---", `name: ${name}`, `description: ${description}`, "---", ""].join("\n");
+}
+
+function dialogLines(text: string): string[] {
+  return text.split(/\r?\n/).filter((line) => line.trim() !== "").map((line) => line.trim());
+}
+
+function emitPickedFolders(returned: string): Promise<string> {
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    "$utf8 = New-Object System.Text.UTF8Encoding $false",
+    "[Console]::OutputEncoding = $utf8",
+    "$OutputEncoding = $utf8",
+    "Add-Type -TypeDefinition @'",
+    "public class SharlieFolderProbe {",
+    "  public static string[] Pick() {",
+    `    return ${returned};`,
+    "  }",
+    "}",
+    "'@",
+    "[string[]]$chosen = [SharlieFolderProbe]::Pick()",
+    "if ($null -ne $chosen) {",
+    "  foreach ($folder in @($chosen)) {",
+    "    if ($null -ne $folder -and \"$folder\" -ne '') {",
+    "      [Console]::Out.WriteLine($folder)",
+    "    }",
+    "  }",
+    "}",
+  ].join("\n");
+  return new Promise((resolve, reject) => {
+    const child = spawn("powershell.exe", ["-NoProfile", "-STA", "-Command", script], {
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
+    child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code !== 0) {
+        reject(new Error(Buffer.concat(stderr).toString("utf8") || `powershell exited ${code}`));
+        return;
+      }
+      resolve(Buffer.concat(stdout).toString("utf8"));
+    });
+  });
 }

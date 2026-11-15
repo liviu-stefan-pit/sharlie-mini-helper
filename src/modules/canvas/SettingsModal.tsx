@@ -91,7 +91,7 @@ export function SettingsModal({
       setConfigured(status.configured);
       setApiKey("");
       savedRef.current = true;
-      setMessage(status.configured ? "Key saved in .env." : "Key cleared.");
+      setMessage(status.configured ? "Key saved." : "Key cleared.");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Could not save the key.");
     } finally {
@@ -115,12 +115,17 @@ export function SettingsModal({
         <p className="mb-3 text-xs leading-relaxed text-zinc-500">
           {configured === null && "Checking whether a key is configured."}
           {configured === true && "A key is already configured on this machine."}
-          {configured === false && "No key configured yet."} The key stays in the local .env file and is never sent
+          {configured === false && "No key configured yet."} The key is stored in Windows Credential Manager and is never sent
           back to the browser.
         </p>
         <div className="mb-3">
           <label className="block text-[10px] font-medium uppercase tracking-wide text-zinc-400">WORKSPACE</label>
           <p className="mt-1 font-mono text-[11px] break-all">{workspace.path ?? "No workspace selected."}</p>
+          {workspace.temporary && (
+            <p className="mt-1 text-xs text-zinc-500">
+              Temporary folder. Windows may clean it up. Browse to pick a permanent folder.
+            </p>
+          )}
           {workspace.path !== null && !workspace.valid && (
             <p className="text-red-600 text-[11px]">{workspace.error}</p>
           )}
@@ -134,7 +139,7 @@ export function SettingsModal({
             <button
               type="button"
               className={ghostButtonClass}
-              disabled={workspace.path === null}
+              disabled={workspace.path === null || workspace.temporary === true}
               onClick={() => void onClearWorkspace()}
             >
               Clear

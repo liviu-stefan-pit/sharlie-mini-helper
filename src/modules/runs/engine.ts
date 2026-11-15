@@ -1,25 +1,52 @@
 /**
- * Responsibility: run resolved pipeline steps and publish stream events.
- * Inputs: execution steps, a Cursor API key, the workspace directory, the library catalog, and enabled MCP configs.
+ * Responsibility: run resolved pipeline steps by their dependencies and publish stream events.
+ * Inputs: execution steps (with inputs), a Cursor API key, the workflow directory, the library catalog, and enabled MCP configs.
  * Outputs: an in-memory run with status, outputs, artifacts, and SSE events.
+ * A node starts once every input is satisfied. Independent agents run in parallel, up to MAX_PARALLEL_AGENTS.
  * The API key, catalog, and MCP configs stay on the run record. Secrets are never logged or returned.
  */
 import { readAgentInstruction, resolveAgentPath } from "../agents/agentFile";
 import { diffSnapshots, snapshotFiles } from "../artifacts/track";
-import { createCursorAgentRunner, type CursorAgentRunner, type RunnerEvent, type SendResult } from "../cursor/adapter";
+import {
+  createCursorAgentRunner,
+  listModels,
+  type CursorAgentRunner,
+  type ListedModel,
+  type RunnerEvent,
+  type SendResult,
+} from "../cursor/adapter";
+import { defaultEffort } from "../cursor/models";
 import type { ExecutionStep } from "../graph/resolve";
 import { applyCatalog } from "../library/catalog";
 import type { EnabledMcpConfig } from "../library/types";
 import {
-  applyHumanDecision,
-  enterHuman,
-  type GateDecision,
-  type GateSnapshot,
-} from "./humanGate";
+  deleteCheckpoint,
+  pipelineFingerprint,
+  writeCheckpoint,
+  type RunCheckpoint,
+} from "./checkpoint";
+import { applyHumanDecision, enterHuman, type GateDecision } from "./humanGate";
+import {
+  busyAgents,
+  canDispose,
+  initialSchedule,
+  readyNodes,
+  reviewSources,
+  runStatus,
+  upstreamFor,
+  waitingHumans,
+  withStatus,
+  type NodeStatus,
+  type ScheduleState,
+} from "./schedule";
+
+export const MAX_PARALLEL_AGENTS = 3;
 
 export type RunStatus = "running" | "paused" | "done" | "error" | "stopped";
 
 export type RunStreamEvent = { event: string; data: unknown };
+
+type AgentStep = Extract<ExecutionStep, { kind: "agent" }>;
 
 export type ActiveRun = {
   id: string;
@@ -28,36 +55,50 @@ export type ActiveRun = {
   outputs: Record<string, string>;
   artifacts: { path: string; agentNodeId: string }[];
   artifactPaths: string[];
-  humanStepIndex: number | null;
+  waitingHumans: string[];
   events: RunStreamEvent[];
   runTotal: number;
 };
 
 type RunRecord = ActiveRun & {
   listeners: Set<(event: RunStreamEvent) => void>;
-  runner: CursorAgentRunner | null;
-  runnerNodeId: string | null;
+  schedule: ScheduleState;
+  runners: Map<string, CursorAgentRunner>;
+  createRunner: () => CursorAgentRunner;
   apiKey: string;
   cwd: string;
   catalog: string;
   mcpServers: EnabledMcpConfig[];
   artifactPrefix: string;
-  stepIndex: number;
-  retryCounts: Record<string, number>;
-  humanStatus: GateSnapshot["humanStatus"];
+  /** True only after a user stop. Decline stays stopped without this flag. */
+  resumable: boolean;
+  modelCatalog?: ListedModel[];
+  modelCatalogTask?: Promise<ListedModel[]>;
 };
 
-const runs = new Map<string, RunRecord>();
-let sessionTokens = 0;
+type RunRestore = {
+  nodeStatus: Record<string, NodeStatus>;
+  retryCounts: Record<string, number>;
+  outputs: Record<string, string>;
+  artifacts: { path: string; agentNodeId: string }[];
+};
 
-export function startRun(options: {
+type RunLaunch = {
   steps: ExecutionStep[];
   apiKey: string;
   cwd: string;
   artifactPrefix: string;
   catalog: string;
   mcpServers: readonly EnabledMcpConfig[];
-}): string {
+  /** Tests pass a fake runner. Defaults to the Cursor runner. */
+  createRunner?: () => CursorAgentRunner;
+};
+
+const runs = new Map<string, RunRecord>();
+let sessionTokens = 0;
+
+export function startRun(options: RunLaunch & { restore?: RunRestore }): string {
+  retireResumable(options.artifactPrefix);
   const id = crypto.randomUUID();
   const run: RunRecord = {
     id,
@@ -66,75 +107,147 @@ export function startRun(options: {
     outputs: {},
     artifacts: [],
     artifactPaths: [],
-    humanStepIndex: null,
+    waitingHumans: [],
     events: [],
     runTotal: 0,
     listeners: new Set(),
-    runner: null,
-    runnerNodeId: null,
+    schedule: initialSchedule(options.steps),
+    runners: new Map(),
+    createRunner: options.createRunner ?? createCursorAgentRunner,
     apiKey: options.apiKey,
     cwd: options.cwd,
     catalog: options.catalog,
     mcpServers: options.mcpServers.map(copyMcpConfig),
     artifactPrefix: options.artifactPrefix,
-    stepIndex: 0,
-    retryCounts: {},
-    humanStatus: "idle",
+    resumable: false,
   };
+  if (options.restore) applyRestore(run, options.restore);
   runs.set(id, run);
-  void runSteps(run, 0).catch((error: unknown) => {
-    void failRun(run, error);
-  });
+  if (options.restore) emitSnapshot(run);
+  pump(run);
   return id;
+}
+
+/**
+ * Cancel an active run. Status becomes `stopped` before any await, so a late send cannot finish it.
+ * Running and redoing nodes return to idle. The checkpoint file is resumable.
+ */
+export async function stopRun(id: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  const run = runs.get(id);
+  if (!run) return { ok: false, error: "Run not found" };
+  if (!isActive(run)) return { ok: false, error: "Run is not active" };
+  run.status = "stopped";
+  run.resumable = true;
+  const rewound: string[] = [];
+  for (const step of run.steps) {
+    const status = run.schedule.nodeStatus[step.nodeId];
+    if (status === "running" || status === "redoing") {
+      setNodeStatus(run, step.nodeId, "idle");
+      rewound.push(step.nodeId);
+    }
+  }
+  for (const nodeId of rewound) {
+    emit(run, "node-status", { nodeId, status: "idle", elapsedMs: 0 });
+  }
+  emit(run, "stopped", { resumable: true });
+  await Promise.all([writeCheckpoint(run.cwd, checkpointFrom(run)), cancelRunners(run)]);
+  return { ok: true };
+}
+
+/**
+ * Continue a user stop. A live run for this workflow is returned as-is.
+ * Same-session keeps the in-memory stopped run. Otherwise the checkpoint seeds a new one.
+ * A graph change (node ids or execution edges) is refused and does not start agents.
+ */
+export function resumeFromCheckpoint(
+  options: RunLaunch & { checkpoint: RunCheckpoint },
+): { ok: true; id: string } | { ok: false; error: string; conflict: boolean } {
+  if (options.checkpoint.version !== 1 || options.checkpoint.pipelineId !== options.artifactPrefix) {
+    return { ok: false, error: "Checkpoint does not match this workflow", conflict: true };
+  }
+  if (pipelineFingerprint(options.steps) !== options.checkpoint.fingerprint) {
+    return {
+      ok: false,
+      error: "The workflow changed after it was stopped. Start over to run it from the beginning.",
+      conflict: true,
+    };
+  }
+  const live = findLive(options.artifactPrefix);
+  if (live) return { ok: true, id: live.id };
+  const existing = findResumable(options.artifactPrefix);
+  if (existing) {
+    continueRun(existing, options);
+    return { ok: true, id: existing.id };
+  }
+  const id = startRun({
+    ...options,
+    restore: {
+      nodeStatus: options.checkpoint.nodeStatus,
+      retryCounts: options.checkpoint.retryCounts,
+      outputs: options.checkpoint.outputs,
+      artifacts: options.checkpoint.artifacts,
+    },
+  });
+  return { ok: true, id };
+}
+
+/** Drop a stopped run from memory. Used to simulate a process restart. The checkpoint file stays. */
+export function forgetStoppedRun(id: string): void {
+  const run = runs.get(id);
+  if (!run || run.status !== "stopped") return;
+  runs.delete(id);
 }
 
 export function runExists(id: string): boolean {
   return runs.has(id);
 }
 
-export function decideRun(id: string, decision: GateDecision): { ok: true } | { ok: false; error: string } {
+/**
+ * Apply a review decision to one human node. `nodeId` may be omitted when exactly one human waits.
+ * `redoNodeId` picks one reviewed agent for Redo one; without it Redo re-sends every reviewed agent.
+ */
+export function decideRun(
+  id: string,
+  decision: GateDecision,
+  nodeId?: string,
+  redoNodeId?: string,
+): { ok: true } | { ok: false; error: string } {
   const run = runs.get(id);
   if (!run) return { ok: false, error: "Run not found" };
-  const current = gateSnapshot(run);
-  const outcome = applyHumanDecision(current, decision);
-  if (outcome.effect.type === "reject") return { ok: false, error: outcome.effect.message };
+  if (!isActive(run)) return { ok: false, error: "Run is not active" };
+  const waiting = waitingHumans(run.schedule);
+  const humanId = nodeId ?? (waiting.length === 1 ? waiting[0] : undefined);
+  if (!humanId) return { ok: false, error: "Choose which review node to decide" };
 
-  const humanId = current.steps[current.stepIndex]?.nodeId;
-  run.retryCounts = outcome.snapshot.retryCounts;
-  run.humanStatus = outcome.snapshot.humanStatus;
-  run.stepIndex = outcome.snapshot.stepIndex;
+  const outcome = applyHumanDecision(run.schedule, humanId, decision, redoNodeId);
+  if (outcome.effect.type === "reject") return { ok: false, error: outcome.effect.message };
+  setSchedule(run, outcome.state);
 
   if (outcome.effect.type === "halt") {
     run.status = "stopped";
-    if (humanId) emit(run, "node-status", { nodeId: humanId, status: "declined", elapsedMs: 0 });
-    emit(run, "stopped", { nodeId: humanId ?? "" });
-    void disposeRunner(run);
+    run.resumable = false;
+    emit(run, "node-status", { nodeId: humanId, status: "declined", elapsedMs: 0 });
+    emit(run, "stopped", { nodeId: humanId });
+    void deleteCheckpoint(run.cwd).catch(() => {});
+    void disposeAll(run);
     return { ok: true };
   }
 
   if (outcome.effect.type === "resend") {
-    const effect = outcome.effect;
-    // Stay running while the same agent is re-sent so a reconnect is not closed by the earlier pause.
     run.status = "running";
-    void resendUpstream(run, effect).catch((error: unknown) => {
-      void failRun(run, error, effect.nodeId);
-    });
+    emit(run, "node-status", { nodeId: humanId, status: "idle", elapsedMs: 0 });
+    for (const target of outcome.effect.nodes) {
+      void resendAgent(run, target.nodeId, target.retryCount).catch((error: unknown) => {
+        void failRun(run, error, target.nodeId);
+      });
+    }
     return { ok: true };
   }
 
-  if (outcome.snapshot.status === "done" || outcome.snapshot.stepIndex >= run.steps.length) {
-    if (humanId) emit(run, "node-status", { nodeId: humanId, status: "approved", elapsedMs: 0 });
-    run.status = "done";
-    emit(run, "done", { status: "done" });
-    void disposeRunner(run);
-    return { ok: true };
-  }
-
+  emit(run, "node-status", { nodeId: humanId, status: "approved", elapsedMs: 0 });
+  for (const agentId of reviewSources(run.schedule, humanId)) releaseRunnerIfIdle(run, agentId);
   run.status = "running";
-  if (humanId) emit(run, "node-status", { nodeId: humanId, status: "approved", elapsedMs: 0 });
-  void runSteps(run, outcome.snapshot.stepIndex).catch((error: unknown) => {
-    void failRun(run, error);
-  });
+  pump(run);
   return { ok: true };
 }
 
@@ -156,123 +269,217 @@ export function subscribeRun(
   };
 }
 
-async function runSteps(run: RunRecord, startIndex: number): Promise<void> {
-  for (let index = startIndex; index < run.steps.length; index += 1) {
-    if (run.status !== "running") return;
-    const step = run.steps[index];
-    if (!step) continue;
-    run.stepIndex = index;
-    if (step.kind === "human") {
-      enterHumanStep(run);
-      return;
-    }
-    await runAgent(run, step, index);
-    if (run.status !== "running") return;
-  }
-  if (run.status !== "running") return;
-  await disposeRunner(run);
-  if (run.status !== "running") return;
-  run.status = "done";
-  emit(run, "done", { status: "done" });
+function isActive(run: RunRecord): boolean {
+  return run.status === "running" || run.status === "paused";
 }
 
-async function runAgent(
-  run: RunRecord,
-  step: Extract<ExecutionStep, { kind: "agent" }>,
-  index: number,
-): Promise<void> {
-  emit(run, "node-status", { nodeId: step.nodeId, status: "running", elapsedMs: 0 });
+function setSchedule(run: RunRecord, next: ScheduleState): void {
+  run.schedule = next;
+  run.waitingHumans = waitingHumans(next);
+}
+
+function setNodeStatus(run: RunRecord, nodeId: string, status: NodeStatus): void {
+  setSchedule(run, withStatus(run.schedule, nodeId, status));
+}
+
+/** Start every ready node the cap allows, then settle the run status. */
+function pump(run: RunRecord): void {
+  if (!isActive(run)) return;
+  let busy = busyAgents(run.schedule).length;
+  for (const nodeId of readyNodes(run.schedule)) {
+    const step = run.steps.find((item) => item.nodeId === nodeId);
+    if (!step) continue;
+    if (step.kind === "human") {
+      enterHumanNode(run, nodeId);
+      continue;
+    }
+    if (busy >= MAX_PARALLEL_AGENTS) continue;
+    busy += 1;
+    setNodeStatus(run, nodeId, "running");
+    void runAgent(run, step).catch((error: unknown) => {
+      void failRun(run, error, nodeId);
+    });
+  }
+  settle(run);
+}
+
+/** Emit `paused` or `done` when the schedule says so. `paused` means nothing runs and a human waits. */
+function settle(run: RunRecord): void {
+  if (!isActive(run)) return;
+  const status = runStatus(run.schedule);
+  if (status === "running") {
+    run.status = "running";
+    return;
+  }
+  if (status === "paused") {
+    if (run.status === "paused") return;
+    run.status = "paused";
+    run.artifactPaths = run.artifacts.map((hit) => hit.path);
+    emit(run, "paused", { nodeIds: run.waitingHumans });
+    return;
+  }
+  if (status === "done") {
+    run.status = "done";
+    run.resumable = false;
+    emit(run, "done", { status: "done" });
+    void deleteCheckpoint(run.cwd).catch(() => {});
+    void disposeAll(run);
+    return;
+  }
+  void failRun(run, new Error("Run cannot continue"));
+}
+
+function enterHumanNode(run: RunRecord, nodeId: string): void {
+  setSchedule(run, enterHuman(run.schedule, nodeId));
+  run.artifactPaths = run.artifacts.map((hit) => hit.path);
+  emit(run, "node-status", { nodeId, status: "waiting", elapsedMs: 0 });
+}
+
+async function runAgent(run: RunRecord, step: AgentStep): Promise<void> {
+  const nodeId = step.nodeId;
+  emit(run, "node-status", { nodeId, status: "running", elapsedMs: 0 });
   const instruction = await readAgentInstruction(resolveAgentPath(run.cwd, step.agentPath));
+  if (!isActive(run)) return;
   if (!instruction.ok) {
-    await failAgentRead(run, step.nodeId, instruction.message);
+    await failNode(run, nodeId, instruction.message);
     return;
   }
   const startedAt = Date.now();
   const before = await snapshotFiles(run.cwd);
-  const runner = await ensureRunner(run, step.nodeId, step.modelId);
-  const prompt = withUpstream(applyCatalog(instruction.text, run.catalog), upstreamTexts(run, index));
+  const runner = await ensureRunner(run, step);
+  if (!isActive(run)) return;
+  const prompt = withUpstream(applyCatalog(instruction.text, run.catalog), upstreamBlocks(run, nodeId));
   const result = await runner.send(prompt, (event) => {
-    forward(run, step.nodeId, event);
+    if (isActive(run)) forward(run, nodeId, event);
   });
-  await finishSend(run, step.nodeId, startedAt, before, result);
+  const ok = await finishSend(run, nodeId, startedAt, before, result);
+  if (!ok) return;
+  releaseRunnerIfIdle(run, nodeId);
+  pump(run);
 }
 
-async function resendUpstream(
-  run: RunRecord,
-  effect: { nodeId: string; retryCount: number },
-): Promise<void> {
-  const { nodeId, retryCount } = effect;
-  const step = run.steps.find((item) => item.kind === "agent" && item.nodeId === nodeId);
-  const instruction = await readAgentInstruction(
-    resolveAgentPath(run.cwd, step?.kind === "agent" ? step.agentPath : ""),
-  );
+async function resendAgent(run: RunRecord, nodeId: string, retryCount: number): Promise<void> {
+  const step = run.steps.find((item): item is AgentStep => item.kind === "agent" && item.nodeId === nodeId);
+  const instruction = await readAgentInstruction(resolveAgentPath(run.cwd, step?.agentPath ?? ""));
+  if (!isActive(run)) return;
   if (!instruction.ok) {
-    await failAgentRead(run, nodeId, instruction.message, retryCount);
+    await failNode(run, nodeId, instruction.message, retryCount);
     return;
   }
   emit(run, "node-status", { nodeId, status: "redoing", retryCount, elapsedMs: 0 });
   const startedAt = Date.now();
   const before = await snapshotFiles(run.cwd);
-  if (!run.runner || run.runnerNodeId !== nodeId) {
-    run.status = "error";
-    emit(run, "node-status", { nodeId, status: "error", retryCount, elapsedMs: 0 });
-    emit(run, "error", { nodeId, message: "Runner is not available" });
-    await disposeRunner(run);
+  const runner = run.runners.get(nodeId);
+  if (!runner) {
+    await failNode(run, nodeId, "Runner is not available", retryCount);
     return;
   }
   // The runner already received the catalog on its first prompt. Redo sends the file body only.
-  const result = await run.runner.send(instruction.text, (event) => {
-    forward(run, nodeId, event);
+  const result = await runner.send(instruction.text, (event) => {
+    if (isActive(run)) forward(run, nodeId, event);
   });
   const ok = await finishSend(run, nodeId, startedAt, before, result, retryCount);
-  if (!ok || run.status !== "running") return;
-  enterHumanStep(run);
+  if (!ok) return;
+  pump(run);
 }
 
-async function failAgentRead(run: RunRecord, nodeId: string, message: string, retryCount?: number): Promise<void> {
+async function failNode(run: RunRecord, nodeId: string, message: string, retryCount?: number): Promise<void> {
+  if (!isActive(run)) return;
   run.status = "error";
+  setNodeStatus(run, nodeId, "error");
   emit(run, "node-status", statusPayload(nodeId, "error", 0, retryCount));
-  emit(run, "error", { nodeId, message });
-  await disposeRunner(run);
+  emit(run, "error", { nodeId, message: publicError(message, run) });
+  await disposeAll(run);
 }
 
-function enterHumanStep(run: RunRecord): void {
-  const step = run.steps[run.stepIndex];
-  if (!step || step.kind !== "human") return;
-  const next = enterHuman(gateSnapshot(run));
-  run.status = next.status;
-  run.humanStatus = next.humanStatus;
-  run.humanStepIndex = run.stepIndex;
-  run.artifactPaths = run.artifacts.map((hit) => hit.path);
-  emit(run, "node-status", { nodeId: step.nodeId, status: "waiting", elapsedMs: 0 });
-  emit(run, "paused", { nodeId: step.nodeId });
-}
-
-async function ensureRunner(run: RunRecord, nodeId: string, modelId: string): Promise<CursorAgentRunner> {
-  if (run.runner && run.runnerNodeId === nodeId) return run.runner;
-  await disposeRunner(run);
-  const runner = createCursorAgentRunner();
-  run.runner = runner;
-  run.runnerNodeId = nodeId;
+async function ensureRunner(run: RunRecord, step: AgentStep): Promise<CursorAgentRunner> {
+  const existing = run.runners.get(step.nodeId);
+  if (existing) return existing;
+  const runner = run.createRunner();
+  run.runners.set(step.nodeId, runner);
+  const selection = await resolveRunSelection(run, step);
   await runner.start({
     apiKey: run.apiKey,
     cwd: run.cwd,
-    modelId,
+    modelId: step.modelId,
+    effort: selection.effort,
+    effortParamId: selection.effortParamId,
     mcpServers: run.mcpServers,
   });
+  // The run may have failed or stopped while this runner was starting.
+  if (!isActive(run)) await disposeOne(run, step.nodeId);
   return runner;
 }
 
-async function disposeRunner(run: RunRecord): Promise<void> {
-  const runner = run.runner;
-  run.runner = null;
-  run.runnerNodeId = null;
+async function resolveRunSelection(
+  run: RunRecord,
+  step: AgentStep,
+): Promise<{ effort: string; effortParamId: string }> {
+  const chosen = step.effort.trim();
+  const storedParam = step.effortParamId.trim();
+  if (chosen && storedParam) return { effort: chosen, effortParamId: storedParam };
+  const catalog = await modelCatalogForRun(run);
+  const match = catalog.find((model) => model.id === step.modelId);
+  const catalogParam = match?.effortParamId.trim() ?? "";
+  if (chosen) return { effort: chosen, effortParamId: storedParam || catalogParam || "effort" };
+  if (!match || match.effort.length === 0) return { effort: "", effortParamId: "" };
+  return {
+    effort: defaultEffort(match.effort),
+    effortParamId: storedParam || catalogParam || "effort",
+  };
+}
+
+async function modelCatalogForRun(run: RunRecord): Promise<ListedModel[]> {
+  if (run.modelCatalog) return run.modelCatalog;
+  if (!run.modelCatalogTask) {
+    run.modelCatalogTask = listModels(run.apiKey)
+      .then((models) => {
+        run.modelCatalog = models;
+        return models;
+      })
+      .catch(() => {
+        const empty: ListedModel[] = [];
+        run.modelCatalog = empty;
+        return empty;
+      });
+  }
+  return run.modelCatalogTask;
+}
+
+/** Drop an agent's runner once no human can still ask it for a redo. */
+function releaseRunnerIfIdle(run: RunRecord, nodeId: string): void {
+  if (canDispose(run.schedule, nodeId)) void disposeOne(run, nodeId);
+}
+
+async function disposeOne(run: RunRecord, nodeId: string): Promise<void> {
+  const runner = run.runners.get(nodeId);
   if (!runner) return;
+  run.runners.delete(nodeId);
   try {
     await runner.dispose();
   } catch {
     // The process is dropping the agent either way.
   }
+}
+
+/** Cancel in-flight SDK runs, then dispose. Does not wait for send() to settle. */
+async function cancelRunners(run: RunRecord): Promise<void> {
+  const runners = [...run.runners.values()];
+  await Promise.all(
+    runners.map(async (runner) => {
+      try {
+        await runner.cancel();
+      } catch {
+        // dispose still drops the agent
+      }
+    }),
+  );
+  await disposeAll(run);
+}
+
+/** Dispose every runner. In-flight sends end and their late results are ignored. */
+async function disposeAll(run: RunRecord): Promise<void> {
+  await Promise.all([...run.runners.keys()].map((nodeId) => disposeOne(run, nodeId)));
 }
 
 async function finishSend(
@@ -283,7 +490,9 @@ async function finishSend(
   result: SendResult,
   retryCount?: number,
 ): Promise<boolean> {
+  if (!isActive(run)) return false;
   const after = await snapshotFiles(run.cwd);
+  if (!isActive(run)) return false;
   const hits = diffSnapshots(before, after, nodeId);
   for (const hit of hits) {
     const prefixed = { path: `${run.artifactPrefix}/${hit.path}`, agentNodeId: hit.agentNodeId };
@@ -293,37 +502,29 @@ async function finishSend(
   run.artifactPaths = run.artifacts.map((hit) => hit.path);
   const elapsedMs = Date.now() - startedAt;
   if (result.failure !== "none" || result.status === "error") {
-    const message = publicError(result.error || "Run failed", run);
     run.status = "error";
+    setNodeStatus(run, nodeId, "error");
     emit(run, "node-status", statusPayload(nodeId, "error", elapsedMs, retryCount));
-    emit(run, "error", { nodeId, message });
-    await disposeRunner(run);
+    emit(run, "error", { nodeId, message: publicError(result.error || "Run failed", run) });
+    await disposeAll(run);
     return false;
   }
   run.outputs[nodeId] = result.text;
+  setNodeStatus(run, nodeId, "done");
   emit(run, "node-status", statusPayload(nodeId, "done", elapsedMs, retryCount));
   return true;
 }
 
 async function failRun(run: RunRecord, error: unknown, nodeId?: string): Promise<void> {
-  if (run.status === "paused" || run.status === "stopped" || run.status === "done" || run.status === "error") return;
+  if (!isActive(run)) return;
   const message = publicError(error instanceof Error ? error.message : "Run failed", run);
-  const current = nodeId ?? run.steps[run.stepIndex]?.nodeId;
-  if (current) emit(run, "node-status", { nodeId: current, status: "error", elapsedMs: 0 });
-  emit(run, "error", current ? { nodeId: current, message } : { message });
   run.status = "error";
-  await disposeRunner(run);
-}
-
-function gateSnapshot(run: RunRecord): GateSnapshot {
-  return {
-    status: run.status,
-    stepIndex: run.stepIndex,
-    steps: run.steps.map((step) => ({ kind: step.kind, nodeId: step.nodeId })),
-    retryCounts: { ...run.retryCounts },
-    outputs: { ...run.outputs },
-    humanStatus: run.humanStatus,
-  };
+  if (nodeId) {
+    setNodeStatus(run, nodeId, "error");
+    emit(run, "node-status", { nodeId, status: "error", elapsedMs: 0 });
+  }
+  emit(run, "error", nodeId ? { nodeId, message } : { message });
+  await disposeAll(run);
 }
 
 function statusPayload(nodeId: string, status: string, elapsedMs: number, retryCount?: number) {
@@ -336,16 +537,14 @@ function statusPayload(nodeId: string, status: string, elapsedMs: number, retryC
   return data;
 }
 
-function upstreamTexts(run: RunRecord, beforeIndex: number): { nodeId: string; text: string }[] {
-  const prior: { nodeId: string; text: string }[] = [];
-  for (let index = 0; index < beforeIndex; index += 1) {
-    const step = run.steps[index];
-    if (!step || step.kind !== "agent") continue;
-    const text = run.outputs[step.nodeId];
-    if (text === undefined) continue;
-    prior.push({ nodeId: step.nodeId, text });
-  }
-  return prior;
+/** One block per connected input: agent name and id, and whether a human approved it. */
+function upstreamBlocks(run: RunRecord, agentId: string): { heading: string; text: string }[] {
+  return upstreamFor(run.schedule, run.outputs, agentId).map((item) => {
+    const step = run.steps.find((candidate) => candidate.nodeId === item.nodeId);
+    const name = step?.kind === "agent" && step.agentName ? step.agentName : "Agent";
+    const approved = item.viaHumanId ? ", approved in human review" : "";
+    return { heading: `${name} (node ${item.nodeId}${approved})`, text: item.text };
+  });
 }
 
 function forward(run: RunRecord, nodeId: string, event: RunnerEvent): void {
@@ -377,12 +576,121 @@ function forward(run: RunRecord, nodeId: string, event: RunnerEvent): void {
   emit(run, "token", data);
 }
 
-function withUpstream(prompt: string, prior: { nodeId: string; text: string }[]): string {
+function withUpstream(prompt: string, prior: { heading: string; text: string }[]): string {
   if (prior.length === 0) return prompt;
-  const blocks = prior.map((item) => `### ${item.nodeId}\n${item.text}`).join("\n\n");
+  const blocks = prior.map((item) => `### ${item.heading}\n${item.text}`).join("\n\n");
   const section = `## Upstream\n\n${blocks}`;
   const trimmed = prompt.trimEnd();
   return trimmed ? `${trimmed}\n\n${section}` : section;
+}
+
+function retireResumable(pipelineId: string): void {
+  for (const run of runs.values()) {
+    if (run.artifactPrefix === pipelineId && run.status === "stopped" && run.resumable) {
+      run.resumable = false;
+    }
+  }
+}
+
+function findLive(pipelineId: string): RunRecord | undefined {
+  for (const run of runs.values()) {
+    if (run.artifactPrefix === pipelineId && isActive(run)) return run;
+  }
+  return undefined;
+}
+
+function findResumable(pipelineId: string): RunRecord | undefined {
+  for (const run of runs.values()) {
+    if (run.artifactPrefix === pipelineId && run.status === "stopped" && run.resumable) return run;
+  }
+  return undefined;
+}
+
+function continueRun(run: RunRecord, options: RunLaunch): void {
+  run.steps = options.steps;
+  setSchedule(run, {
+    steps: options.steps.map((step) => ({ kind: step.kind, nodeId: step.nodeId, inputs: step.inputs })),
+    nodeStatus: run.schedule.nodeStatus,
+    retryCounts: run.schedule.retryCounts,
+  });
+  run.apiKey = options.apiKey;
+  run.cwd = options.cwd;
+  run.catalog = options.catalog;
+  run.mcpServers = options.mcpServers.map(copyMcpConfig);
+  if (options.createRunner) run.createRunner = options.createRunner;
+  run.resumable = false;
+  run.status = "running";
+  // Fresh log so a reopened stream does not replay the old stopped event.
+  run.events = [];
+  emitSnapshot(run);
+  pump(run);
+}
+
+function applyRestore(run: RunRecord, restore: RunRestore): void {
+  const nodeStatus: Record<string, NodeStatus> = {};
+  for (const step of run.steps) nodeStatus[step.nodeId] = parkedStatus(restore.nodeStatus[step.nodeId]);
+  const retryCounts: Record<string, number> = {};
+  for (const [id, count] of Object.entries(restore.retryCounts)) {
+    if (typeof count === "number" && Number.isFinite(count)) retryCounts[id] = count;
+  }
+  setSchedule(run, { ...run.schedule, nodeStatus, retryCounts });
+  const outputs: Record<string, string> = {};
+  for (const step of run.steps) {
+    if (nodeStatus[step.nodeId] !== "done") continue;
+    const text = restore.outputs[step.nodeId];
+    if (typeof text === "string") outputs[step.nodeId] = text;
+  }
+  run.outputs = outputs;
+  run.artifacts = restore.artifacts.map((hit) => ({ path: hit.path, agentNodeId: hit.agentNodeId }));
+  run.artifactPaths = run.artifacts.map((hit) => hit.path);
+}
+
+function parkedStatus(status: NodeStatus | undefined): NodeStatus {
+  if (status === undefined || status === "running" || status === "redoing") return "idle";
+  return status;
+}
+
+function emitSnapshot(run: RunRecord): void {
+  for (const step of run.steps) {
+    const status = run.schedule.nodeStatus[step.nodeId] ?? "idle";
+    emit(run, "node-status", statusPayload(step.nodeId, status, 0, run.schedule.retryCounts[step.nodeId]));
+  }
+  for (const hit of run.artifacts) {
+    emit(run, "artifact", { path: hit.path, agentNodeId: hit.agentNodeId });
+  }
+  for (const step of run.steps) {
+    if (run.schedule.nodeStatus[step.nodeId] !== "done") continue;
+    const text = run.outputs[step.nodeId];
+    if (!text) continue;
+    emit(run, "assistant", { nodeId: step.nodeId, text });
+  }
+}
+
+function checkpointFrom(run: RunRecord): RunCheckpoint {
+  const nodeStatus: Record<string, NodeStatus> = {};
+  for (const step of run.steps) {
+    nodeStatus[step.nodeId] = parkedStatus(run.schedule.nodeStatus[step.nodeId]);
+  }
+  const outputs: Record<string, string> = {};
+  for (const step of run.steps) {
+    if (nodeStatus[step.nodeId] !== "done") continue;
+    const text = run.outputs[step.nodeId];
+    if (typeof text === "string") outputs[step.nodeId] = text;
+  }
+  const retryCounts: Record<string, number> = {};
+  for (const [id, count] of Object.entries(run.schedule.retryCounts)) {
+    if (typeof count === "number" && Number.isFinite(count)) retryCounts[id] = count;
+  }
+  return {
+    version: 1,
+    pipelineId: run.artifactPrefix,
+    stoppedAt: new Date().toISOString(),
+    nodeStatus,
+    retryCounts,
+    outputs,
+    artifacts: run.artifacts.map((hit) => ({ path: hit.path, agentNodeId: hit.agentNodeId })),
+    fingerprint: pipelineFingerprint(run.steps),
+  };
 }
 
 function emit(run: RunRecord, event: string, data: unknown): void {

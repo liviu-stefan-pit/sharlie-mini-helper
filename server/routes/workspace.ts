@@ -48,7 +48,7 @@ export async function handleWorkspace(ctx: RouteContext): Promise<boolean> {
   }
   if (body.path === null) {
     await writeAppSettings(ctx.appRoot, { version: 1, workspacePath: null });
-    sendJson(ctx.res, 200, { path: null, valid: false });
+    sendJson(ctx.res, 200, await getActiveWorkspace(ctx.appRoot));
     return true;
   }
   const check = await validateWorkspacePath(body.path, ctx.appRoot);

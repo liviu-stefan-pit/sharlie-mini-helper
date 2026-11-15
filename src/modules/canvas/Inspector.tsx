@@ -38,5 +38,5 @@ function InspectorBody({ node }: { node: FlowNode }) {
   if (node.type === "agent") {
     return <AgentFields data={node.data} models={models} health={health} onChange={(next) => patch(next)} />;
   }
-  return <HumanFields data={node.data} />;
+  return <HumanFields nodeId={node.id} data={node.data} />;
 }

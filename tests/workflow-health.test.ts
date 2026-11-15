@@ -244,6 +244,8 @@ function agent(id: string, agentPath: string, agentName: string): PipelineNode {
     position: { x: 0, y: 0 },
     data: {
       modelId: "model",
+      effort: "",
+      effortParamId: "",
       agentPath,
       agentName,
       status: "idle",

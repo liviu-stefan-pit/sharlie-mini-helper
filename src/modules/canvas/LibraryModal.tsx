@@ -5,7 +5,15 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { LibraryMcp, LibrarySnapshot, LibrarySource, Selection } from "../library/types";
-import { browseLibrary, deleteLibraryItem, fetchLibrary, importLibraryItem, saveLibrarySelection } from "./api";
+import {
+  browseLibrary,
+  deleteLibraryItem,
+  fetchLibrary,
+  importLibraryRules,
+  importLibrarySkills,
+  saveLibrarySelection,
+  type LibraryPathProblem,
+} from "./api";
 import { ghostButtonClass, primaryButtonClass } from "./ui";
 
 type LibraryKind = "skills" | "rules" | "mcps";
@@ -149,10 +157,11 @@ export function LibraryModal({ open, onClose }: { open: boolean; onClose: () => 
               </ul>
               <BrowseImport
                 kind="skill"
-                hint="The folder must contain SKILL.md."
-                onImport={async (filePath) => {
-                  await importLibraryItem("skill", filePath);
+                hint="Each folder must contain SKILL.md. You can select more than one."
+                onImport={async (filePaths) => {
+                  const result = await importLibrarySkills(filePaths);
                   await reload();
+                  return { items: result.skills, errors: result.errors };
                 }}
               />
             </section>
@@ -175,10 +184,11 @@ export function LibraryModal({ open, onClose }: { open: boolean; onClose: () => 
               </ul>
               <BrowseImport
                 kind="rule"
-                hint="Choose a .mdc or .md file."
-                onImport={async (filePath) => {
-                  await importLibraryItem("rule", filePath);
+                hint="Choose .mdc or .md files. You can select more than one."
+                onImport={async (filePaths) => {
+                  const result = await importLibraryRules(filePaths);
                   await reload();
+                  return { items: result.rules, errors: result.errors };
                 }}
               />
             </section>
@@ -256,27 +266,37 @@ function LibraryRow({
   );
 }
 
-function BrowseImport({
-  kind,
-  hint,
-  onImport,
-}: {
+type BrowseImportProps = {
   kind: "skill" | "rule";
   hint: string;
-  onImport: (filePath: string) => Promise<void>;
-}) {
+  onImport: (
+    filePaths: string[],
+  ) => Promise<{ items: { title: string; path: string }[]; errors: LibraryPathProblem[] }>;
+};
+
+function BrowseImport({ kind, hint, onImport }: BrowseImportProps) {
   const [waiting, setWaiting] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
 
   async function browse() {
     setWaiting(true);
+    setNotice(null);
     setMessage(null);
     try {
       const picked = await browseLibrary(kind);
       if ("cancelled" in picked) return;
-      await onImport(picked.path);
+      const problems = [...picked.skipped];
+      let items: { title: string; path: string }[] = [];
+      if (picked.paths.length > 0) {
+        const result = await onImport(picked.paths);
+        items = result.items;
+        problems.push(...result.errors);
+      }
+      setNotice(importNotice(kind, items));
+      setMessage(problemText(problems));
     } catch (error) {
-      setMessage(errorMessage(error, `Could not import the ${kind}.`));
+      setMessage(errorMessage(error, `Could not import the ${kind}s.`));
     } finally {
       setWaiting(false);
     }
@@ -287,20 +307,33 @@ function BrowseImport({
       <button
         type="button"
         className={primaryButtonClass}
-        aria-label={kind === "skill" ? "Browse for a skill folder" : "Browse for a rule file"}
+        aria-label={kind === "skill" ? "Browse for skill folders" : "Browse for rule files"}
         disabled={waiting}
         onClick={() => void browse()}
       >
         {waiting ? "Waiting" : "Browse"}
       </button>
       <p className="mt-2 text-xs text-zinc-500">{hint}</p>
+      {notice && <p className="mt-2 text-xs text-zinc-600 dark:text-zinc-300">{notice}</p>}
       {message && (
-        <p className="mt-2 text-xs text-red-600" role="alert">
+        <p className="mt-2 whitespace-pre-wrap text-xs text-red-600" role="alert">
           {message}
         </p>
       )}
     </div>
   );
+}
+
+function importNotice(kind: "skill" | "rule", items: { title: string; path: string }[]): string | null {
+  if (items.length === 0) return null;
+  const names = items.map((item) => (item.title.trim() !== "" ? item.title.trim() : item.path));
+  if (names.length === 1) return `Imported ${names[0]}.`;
+  return `Imported ${names.length} ${kind}s: ${names.join(", ")}.`;
+}
+
+function problemText(problems: LibraryPathProblem[]): string | null {
+  if (problems.length === 0) return null;
+  return problems.map((item) => `${item.path}: ${item.error}`).join("\n");
 }
 
 function sourceLabel(source: LibrarySource): string {

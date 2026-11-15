@@ -4,8 +4,9 @@
  * Outputs: { configured } only. The key itself is never returned.
  */
 import path from "node:path";
+import { CredentialError, deleteApiKey, writeApiKey } from "../credentials";
 import { JsonError, readJson, sendJson } from "../http";
-import { upsertEnvValue } from "../loadEnv";
+import { removeEnvValue, upsertEnvValue } from "../loadEnv";
 import type { RouteContext } from "./context";
 
 export async function handleSettings(ctx: RouteContext): Promise<boolean> {
@@ -31,12 +32,28 @@ export async function handleSettings(ctx: RouteContext): Promise<boolean> {
       return true;
     }
     const envPath = path.join(ctx.appRoot, ".env");
-    await upsertEnvValue(envPath, "CURSOR_API_KEY", apiKey);
-    process.env.CURSOR_API_KEY = apiKey;
+    if (process.platform === "win32") {
+      if (apiKey.length > 0) {
+        await writeApiKey(apiKey);
+        await removeEnvValue(envPath, "CURSOR_API_KEY");
+        process.env.CURSOR_API_KEY = apiKey;
+      } else {
+        await deleteApiKey();
+        await removeEnvValue(envPath, "CURSOR_API_KEY");
+        delete process.env.CURSOR_API_KEY;
+      }
+    } else {
+      await upsertEnvValue(envPath, "CURSOR_API_KEY", apiKey);
+      process.env.CURSOR_API_KEY = apiKey;
+    }
     sendJson(ctx.res, 200, { configured: apiKey.length > 0 });
   } catch (error) {
     if (error instanceof JsonError) {
       sendJson(ctx.res, 400, { error: error.message });
+      return true;
+    }
+    if (error instanceof CredentialError) {
+      sendJson(ctx.res, 500, { error: "Could not save the key to Windows Credential Manager" });
       return true;
     }
     sendJson(ctx.res, 500, { error: "Could not update settings" });

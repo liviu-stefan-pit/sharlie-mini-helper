@@ -17,3 +17,9 @@ export const ghostButtonClass =
 
 export const primaryButtonClass =
   "rounded-md border border-zinc-900 bg-zinc-900 px-2 py-1 text-xs text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-40 dark:border-zinc-100 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-white";
+
+export const inputHandleClass =
+  "!h-2.5 !w-2.5 !border-sky-600 !bg-sky-400 dark:!border-sky-300 dark:!bg-sky-500";
+
+export const outputHandleClass =
+  "!h-2.5 !w-2.5 !border-amber-600 !bg-amber-400 dark:!border-amber-300 dark:!bg-amber-500";

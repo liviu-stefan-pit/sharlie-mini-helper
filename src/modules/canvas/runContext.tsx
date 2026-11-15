@@ -9,7 +9,8 @@ export type ReviewDecision = "approve" | "redo" | "decline";
 
 export type RunActions = {
   runId: string | null;
-  decide: (decision: ReviewDecision) => void;
+  /** `redoNodeId` picks one reviewed agent for Redo one. */
+  decide: (nodeId: string, decision: ReviewDecision, redoNodeId?: string) => void;
   previewPath: (filePath: string) => void;
 };
 

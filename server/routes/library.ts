@@ -1,25 +1,28 @@
 /**
  * Responsibility: library snapshot, selection, import, browse, forget, and body routes.
  * Inputs: /api/library requests and the workspace root.
- * Outputs: library JSON without env or header values. Browse returns a real path or cancelled. Enabled MCP env stays off this route.
+ * Outputs: library JSON without env or header values. Skill browse returns SKILL.md paths and skips. Rule browse returns rule file paths and skips. Enabled MCP env stays off this route.
  */
 import {
   LibraryError,
-  absoluteRealFile,
   defaultCursorHome,
   filterSelection,
   forgetImport,
   importLibraryItem,
+  importLibraryItems,
   libraryRoot,
+  readLastBrowseDir,
   readLibraryBody,
+  realFiles,
+  rememberBrowseDirectory,
   scanLibrary,
-  skillFileInFolder,
+  skillFilesInFolders,
   writeSelection,
   type LibraryRoots,
   type Selection,
 } from "../../src/modules/library";
 import { readJson, sendJson } from "../http";
-import { openNativeDialog, type NativeDialogPick } from "../nativeDialog";
+import { openRuleFilesDialog, openSkillFoldersDialog, type NativeDialogPaths } from "../nativeDialog";
 import type { RouteContext } from "./context";
 
 export async function handleLibrary(ctx: RouteContext): Promise<boolean> {
@@ -56,19 +59,11 @@ export async function handleLibrary(ctx: RouteContext): Promise<boolean> {
     const body = recordBody(await readJson(req));
     const kind = stringField(body.kind, "kind");
     if (kind !== "skill" && kind !== "rule") throw new LibraryError("kind must be skill or rule");
-    let picked: NativeDialogPick;
-    try {
-      picked = await openNativeDialog(kind);
-    } catch {
-      sendJson(res, 500, { error: "Could not open the file dialog" });
+    if (kind === "skill") {
+      await browseSkills(res, roots.appLibraryRoot);
       return true;
     }
-    if ("cancelled" in picked) {
-      sendJson(res, 200, { cancelled: true });
-      return true;
-    }
-    const chosen = kind === "skill" ? await skillFileInFolder(picked.path) : await absoluteRealFile(picked.path);
-    sendJson(res, 200, { path: chosen });
+    await browseRule(res, roots.appLibraryRoot);
     return true;
   }
 
@@ -80,6 +75,15 @@ export async function handleLibrary(ctx: RouteContext): Promise<boolean> {
     const body = recordBody(await readJson(req));
     const kind = stringField(body.kind, "kind");
     if (kind !== "skill" && kind !== "rule") throw new LibraryError("kind must be skill or rule");
+    if (Array.isArray(body.paths)) {
+      const result = await importLibraryItems({
+        appLibraryRoot: roots.appLibraryRoot,
+        kind,
+        paths: stringArray(body.paths, "paths"),
+      });
+      sendJson(res, 200, result);
+      return true;
+    }
     const item = await importLibraryItem({
       appLibraryRoot: roots.appLibraryRoot,
       kind,
@@ -113,6 +117,52 @@ export async function handleLibrary(ctx: RouteContext): Promise<boolean> {
   }
 
   return false;
+}
+
+async function browseSkills(res: RouteContext["res"], appLibraryRoot: string): Promise<void> {
+  const initialDirectory = await readLastBrowseDir(appLibraryRoot, "skill");
+  let picked: Awaited<ReturnType<typeof openSkillFoldersDialog>>;
+  try {
+    picked = await openSkillFoldersDialog(initialDirectory ?? undefined);
+  } catch {
+    sendJson(res, 500, { error: "Could not open the file dialog" });
+    return;
+  }
+  if ("cancelled" in picked) {
+    sendJson(res, 200, { cancelled: true });
+    return;
+  }
+  await rememberChosenDirectory(appLibraryRoot, "skill", picked.paths);
+  sendJson(res, 200, await skillFilesInFolders(picked.paths));
+}
+
+async function browseRule(res: RouteContext["res"], appLibraryRoot: string): Promise<void> {
+  const initialDirectory = await readLastBrowseDir(appLibraryRoot, "rule");
+  let picked: NativeDialogPaths;
+  try {
+    picked = await openRuleFilesDialog(initialDirectory ?? undefined);
+  } catch {
+    sendJson(res, 500, { error: "Could not open the file dialog" });
+    return;
+  }
+  if ("cancelled" in picked) {
+    sendJson(res, 200, { cancelled: true });
+    return;
+  }
+  await rememberChosenDirectory(appLibraryRoot, "rule", picked.paths);
+  sendJson(res, 200, await realFiles(picked.paths));
+}
+
+async function rememberChosenDirectory(
+  appLibraryRoot: string,
+  kind: "skill" | "rule",
+  picks: string[],
+): Promise<void> {
+  try {
+    await rememberBrowseDirectory(appLibraryRoot, kind, picks);
+  } catch {
+    /* A chosen folder still imports when the last directory cannot be saved. */
+  }
 }
 
 function rootsFor(appRoot: string): LibraryRoots {

@@ -4,6 +4,7 @@
  * Outputs: pipeline summaries, saved documents, settings status, workspace status, models, run ids, workflow health, and library snapshots.
  */
 import type { PipelineDocument, PipelineSummary } from "../graph/types";
+import type { ModelChoice } from "./modelsContext";
 import type { LibraryRule, LibrarySkill, LibrarySnapshot, Selection } from "../library/types";
 import type { WorkflowHealth } from "../workflow/health";
 
@@ -30,10 +31,10 @@ export async function fetchSettings(): Promise<{ configured: boolean }> {
 
 export async function fetchModels(): Promise<{
   configured: boolean;
-  models: { id: string; label: string }[];
+  models: ModelChoice[];
   error?: string;
 }> {
-  return requestJson<{ configured: boolean; models: { id: string; label: string }[]; error?: string }>("/api/models");
+  return requestJson<{ configured: boolean; models: ModelChoice[]; error?: string }>("/api/models");
 }
 
 export async function startRun(doc: PipelineDocument): Promise<{ id: string; warnings?: string[] }> {
@@ -44,6 +45,26 @@ export async function startRun(doc: PipelineDocument): Promise<{ id: string; war
   });
 }
 
+export async function resumeRun(doc: PipelineDocument): Promise<{ id: string; warnings?: string[] }> {
+  return requestJson<{ id: string; warnings?: string[] }>("/api/runs/resume", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(doc),
+  });
+}
+
+export async function stopRun(id: string): Promise<{ ok: true }> {
+  return requestJson<{ ok: true }>(`/api/runs/${encodeURIComponent(id)}/stop`, { method: "POST" });
+}
+
+export async function fetchCheckpoint(id: string): Promise<{ resumable: boolean }> {
+  return requestJson<{ resumable: boolean }>(`/api/pipelines/${encodeURIComponent(id)}/checkpoint`);
+}
+
+export async function deleteCheckpoint(id: string): Promise<{ ok: true }> {
+  return requestJson<{ ok: true }>(`/api/pipelines/${encodeURIComponent(id)}/checkpoint`, { method: "DELETE" });
+}
+
 export async function fetchWorkflowHealth(doc: PipelineDocument): Promise<WorkflowHealth> {
   return requestJson<WorkflowHealth>("/api/workflow/health", {
     method: "POST",
@@ -52,11 +73,19 @@ export async function fetchWorkflowHealth(doc: PipelineDocument): Promise<Workfl
   });
 }
 
-export async function postDecision(id: string, decision: "approve" | "redo" | "decline"): Promise<{ ok: true }> {
+/** `redoNodeId` is only for Redo one. Without it, Redo re-sends every agent the human reviews. */
+export async function postDecision(
+  id: string,
+  nodeId: string,
+  decision: "approve" | "redo" | "decline",
+  redoNodeId?: string,
+): Promise<{ ok: true }> {
+  const body: { decision: string; nodeId: string; redoNodeId?: string } = { decision, nodeId };
+  if (redoNodeId !== undefined) body.redoNodeId = redoNodeId;
   return requestJson<{ ok: true }>(`/api/runs/${encodeURIComponent(id)}/decision`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ decision }),
+    body: JSON.stringify(body),
   });
 }
 
@@ -85,7 +114,7 @@ export async function saveSettings(apiKey: string): Promise<{ configured: boolea
   });
 }
 
-export type WorkspaceStatus = { path: string | null; valid: boolean; error?: string };
+export type WorkspaceStatus = { path: string | null; valid: boolean; error?: string; temporary?: boolean };
 
 export async function fetchWorkspace(): Promise<WorkspaceStatus> {
   return requestJson<WorkspaceStatus>("/api/workspace");
@@ -134,29 +163,36 @@ export async function saveLibrarySelection(selection: Selection): Promise<Select
   });
 }
 
-export async function browseLibrary(kind: "skill" | "rule"): Promise<{ cancelled: true } | { path: string }> {
-  return requestJson<{ cancelled: true } | { path: string }>("/api/library/browse", {
+export type LibraryPathProblem = { path: string; error: string };
+
+export async function browseLibrary(
+  kind: "skill" | "rule",
+): Promise<{ cancelled: true } | { paths: string[]; skipped: LibraryPathProblem[] }> {
+  return requestJson("/api/library/browse", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ kind }),
   });
 }
 
-export async function importLibraryItem(kind: "skill" | "rule", path: string): Promise<LibrarySkill | LibraryRule> {
-  if (kind === "skill") {
-    const body = await requestJson<{ skill: LibrarySkill }>("/api/library/import", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ kind, path }),
-    });
-    return body.skill;
-  }
-  const body = await requestJson<{ rule: LibraryRule }>("/api/library/import", {
+export async function importLibrarySkills(
+  paths: string[],
+): Promise<{ skills: LibrarySkill[]; errors: LibraryPathProblem[] }> {
+  return requestJson<{ skills: LibrarySkill[]; errors: LibraryPathProblem[] }>("/api/library/import", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ kind, path }),
+    body: JSON.stringify({ kind: "skill", paths }),
   });
-  return body.rule;
+}
+
+export async function importLibraryRules(
+  paths: string[],
+): Promise<{ rules: LibraryRule[]; errors: LibraryPathProblem[] }> {
+  return requestJson<{ rules: LibraryRule[]; errors: LibraryPathProblem[] }>("/api/library/import", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ kind: "rule", paths }),
+  });
 }
 
 export async function deleteLibraryItem(id: string): Promise<{ deleted: true }> {

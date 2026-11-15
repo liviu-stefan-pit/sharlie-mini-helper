@@ -234,6 +234,8 @@ describe("sharlie format", () => {
             position: { x: 0, y: 0 },
             data: {
               modelId: "auto",
+              effort: "",
+              effortParamId: "",
               agentPath: "missing.md",
               agentName: "Helper",
               status: "done",
@@ -491,6 +493,8 @@ async function buildSample(dir: string, includeFiles: boolean) {
         position: { x: 1, y: 2 },
         data: {
           modelId: "composer",
+          effort: "",
+          effortParamId: "",
           agentPath: absoluteAgent,
           agentName: "Custom",
           status: "done",
@@ -506,6 +510,8 @@ async function buildSample(dir: string, includeFiles: boolean) {
         position: { x: 3, y: 4 },
         data: {
           modelId: "composer",
+          effort: "",
+          effortParamId: "",
           agentPath: "helper.md",
           agentName: "",
           status: "error",

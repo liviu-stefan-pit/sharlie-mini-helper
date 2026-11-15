@@ -18,9 +18,12 @@ import {
   type Edge,
 } from "@xyflow/react";
 import type { AgentStatus, HumanStatus, NodeKind, PipelineDocument, PipelineSummary, WorkflowDependency } from "./modules/graph/types";
+import { graphShape, reviewSources, wouldCreateCycle } from "./modules/graph/topology";
 import type { WorkflowHealth } from "./modules/workflow/health";
 import {
+  deleteCheckpoint,
   exportWorkflow,
+  fetchCheckpoint,
   fetchModels,
   fetchWorkflowHealth,
   importWorkflow,
@@ -28,13 +31,17 @@ import {
   fetchPipelines,
   fetchWorkspace,
   postDecision,
+  resumeRun,
   savePipeline,
   startRun,
+  stopRun,
   type WorkspaceStatus,
 } from "./modules/canvas/api";
 import { AgentNode } from "./modules/canvas/AgentNode";
 import { HumanNode } from "./modules/canvas/HumanNode";
 import {
+  agentDefaultsFromNodes,
+  canvasAgentsFromNodes,
   createNode,
   makePipelineId,
   toFlowEdge,
@@ -45,8 +52,9 @@ import {
   type FlowNode,
 } from "./modules/canvas/flow";
 import { FilePreview } from "./modules/canvas/FilePreview";
+import { GraphContext, buildCanvasGraph, type CanvasGraph } from "./modules/canvas/graphContext";
 import { Inspector } from "./modules/canvas/Inspector";
-import { ModelsContext, type ModelChoice } from "./modules/canvas/modelsContext";
+import { CanvasAgentsContext, ModelsContext, type ModelChoice } from "./modules/canvas/modelsContext";
 import { PatchContext } from "./modules/canvas/patch";
 import { RunContext, type ReviewDecision } from "./modules/canvas/runContext";
 import { DependenciesModal } from "./modules/canvas/DependenciesModal";
@@ -62,6 +70,8 @@ const nodeTypes = {
   agent: AgentNode,
   human: HumanNode,
 };
+
+const canvasDeleteKeys = ["Backspace", "Delete"];
 
 export function App() {
   return (
@@ -102,6 +112,8 @@ function Editor() {
   const workspaceReady = workspace.valid;
   const canExport = workspaceReady && runPhase === "idle";
   const canImport = workspaceReady && runPhase === "idle";
+  const blockCanvasDelete =
+    settingsOpen || libraryOpen || exportOpen || warningsOpen || dependenciesOpen || previewFile !== null;
   const healthKey = useMemo(() => {
     const agents = nodes
       .filter((node) => node.type === "agent")
@@ -113,7 +125,8 @@ function Editor() {
   const pinnedId = useRef<string | null>(null);
   const sourceRef = useRef<EventSource | null>(null);
   const generationRef = useRef(0);
-  const { screenToFlowPosition, getNodes, fitView } = useReactFlow();
+  const stopRequestedRef = useRef(false);
+  const { screenToFlowPosition, getNodes, getEdges, fitView } = useReactFlow<FlowNode, FlowEdge>();
 
   const loadModels = useCallback(() => {
     void fetchModels()
@@ -172,6 +185,20 @@ function Editor() {
   }, []);
 
   useEffect(() => {
+    if (!workspaceReady || !currentId || runId) return;
+    let cancelled = false;
+    void fetchCheckpoint(currentId)
+      .then((probe) => {
+        if (cancelled || !probe.resumable) return;
+        setRunPhase((phase) => (phase === "idle" ? "stopped" : phase));
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [workspaceReady, currentId, runId]);
+
+  useEffect(() => {
     if (!notice) return;
     const timer = window.setTimeout(() => setNotice(null), 2500);
     return () => window.clearTimeout(timer);
@@ -195,7 +222,14 @@ function Editor() {
         y: window.innerHeight / 2,
       });
       const offset = (step % 6) * 28;
-      setNodes((current) => [...current, createNode(kind, { x: center.x + offset, y: center.y + offset })]);
+      setNodes((current) => [
+        ...current,
+        createNode(
+          kind,
+          { x: center.x + offset, y: center.y + offset },
+          kind === "agent" ? agentDefaultsFromNodes(current) : undefined,
+        ),
+      ]);
     },
     [screenToFlowPosition, setNodes],
   );
@@ -207,9 +241,12 @@ function Editor() {
       const source = all.find((node) => node.id === connection.source);
       const target = all.find((node) => node.id === connection.target);
       if (!source || !target) return false;
-      return true;
+      const edgesNow = getEdges();
+      // One edge per pair, and no loops: a node waits for all its inputs, so a cycle could never start.
+      if (edgesNow.some((edge) => edge.source === source.id && edge.target === target.id)) return false;
+      return !wouldCreateCycle(edgesNow, source.id, target.id);
     },
-    [getNodes],
+    [getEdges, getNodes],
   );
 
   const onConnect = useCallback(
@@ -231,7 +268,10 @@ function Editor() {
   );
 
   function onWorkspaceChanged(status: WorkspaceStatus) {
-    const unchanged = status.path === workspace.path && status.valid === workspace.valid;
+    const unchanged =
+      status.path === workspace.path &&
+      status.valid === workspace.valid &&
+      Boolean(status.temporary) === Boolean(workspace.temporary);
     setWorkspace(status);
     if (unchanged && status.path !== null) return;
     pinnedId.current = null;
@@ -361,6 +401,11 @@ function Editor() {
   async function onLoad(id: string): Promise<PipelineDocument | null> {
     try {
       const doc = await fetchPipeline(id);
+      const generation = generationRef.current + 1;
+      generationRef.current = generation;
+      sourceRef.current?.close();
+      sourceRef.current = null;
+      stopRequestedRef.current = false;
       pinnedId.current = null;
       setCurrentId(doc.id);
       setName(doc.name);
@@ -368,6 +413,15 @@ function Editor() {
       setNodes(doc.nodes.map((node) => toFlowNode(node)));
       setEdges(doc.edges.map((edge) => toFlowEdge(edge)));
       setSelectedId(null);
+      setRunId(null);
+      let resumable = false;
+      try {
+        resumable = (await fetchCheckpoint(doc.id)).resumable;
+      } catch {
+        resumable = false;
+      }
+      if (generationRef.current !== generation) return doc;
+      setRunPhase(resumable ? "stopped" : "idle");
       window.setTimeout(() => fitView({ padding: 0.2 }), 0);
       return doc;
     } catch (error) {
@@ -376,8 +430,8 @@ function Editor() {
     }
   }
 
-  function onRun() {
-    if (runPhase !== "idle") return;
+  function beginFreshRun() {
+    stopRequestedRef.current = false;
     setRunPhase("connecting");
     setNodes((current) =>
       current.map((node) => {
@@ -406,11 +460,79 @@ function Editor() {
         }
         setRunId(id);
         openRunStream(id, streamDeps());
+        if (stopRequestedRef.current) {
+          stopRequestedRef.current = false;
+          void stopRun(id).catch((error: unknown) => {
+            const message = error instanceof Error ? error.message : "Stop failed";
+            if (message === "Run is not active") return;
+            setNotice({ tone: "err", text: message });
+          });
+        }
       })
       .catch((error: unknown) => {
         if (generationRef.current !== generation) return;
-        setRunPhase("idle");
-        setNotice({ tone: "err", text: error instanceof Error ? error.message : "Run failed" });
+        stopRequestedRef.current = false;
+        const message = error instanceof Error ? error.message : "Run failed";
+        setRunPhase(message.startsWith("This workflow is stopped") ? "stopped" : "idle");
+        setNotice({ tone: "err", text: message });
+      });
+  }
+
+  function onRun() {
+    if (runPhase !== "idle") return;
+    beginFreshRun();
+  }
+
+  function onResume() {
+    if (runPhase !== "stopped") return;
+    setRunPhase("connecting");
+    const doc = pipelineDocument();
+    const generation = generationRef.current;
+    void resumeRun(doc)
+      .then(({ id, warnings }) => {
+        if (generationRef.current !== generation) return;
+        if (warnings && warnings.length > 0) {
+          const shown = warnings.slice(0, 3).join(", ");
+          const rest = warnings.length > 3 ? ` and ${warnings.length - 3} more` : "";
+          setNotice({ tone: "err", text: `Running without: ${shown}${rest}` });
+        }
+        setRunId(id);
+        openRunStream(id, streamDeps());
+      })
+      .catch((error: unknown) => {
+        if (generationRef.current !== generation) return;
+        setRunPhase("stopped");
+        setNotice({ tone: "err", text: error instanceof Error ? error.message : "Resume failed" });
+      });
+  }
+
+  function onStop() {
+    if (runPhase !== "connecting" && runPhase !== "running" && runPhase !== "paused") return;
+    if (!runId) {
+      stopRequestedRef.current = true;
+      return;
+    }
+    const id = runId;
+    void stopRun(id).catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : "Stop failed";
+      if (message === "Run is not active") return;
+      setNotice({ tone: "err", text: message });
+    });
+  }
+
+  function onStartOver() {
+    if (runPhase !== "stopped") return;
+    const id = currentId ?? pinnedId.current;
+    if (!id) return;
+    const generation = generationRef.current;
+    void deleteCheckpoint(id)
+      .then(() => {
+        if (generationRef.current !== generation) return;
+        beginFreshRun();
+      })
+      .catch((error: unknown) => {
+        if (generationRef.current !== generation) return;
+        setNotice({ tone: "err", text: error instanceof Error ? error.message : "Could not start over" });
       });
   }
 
@@ -423,16 +545,18 @@ function Editor() {
       setTokenPill,
       sourceRef,
       generationRef,
+      getNodes,
+      getEdges,
     }),
-    [setEdges, setNodes],
+    [getEdges, getNodes, setEdges, setNodes],
   );
 
   const submitDecision = useCallback(
-    (decision: ReviewDecision) => {
+    (nodeId: string, decision: ReviewDecision, redoNodeId?: string) => {
       if (!runId) return;
       const id = runId;
       const generation = generationRef.current;
-      void postDecision(id, decision)
+      void postDecision(id, nodeId, decision, redoNodeId)
         .then(() => {
           if (generationRef.current !== generation) return;
           openRunStream(id, streamDeps());
@@ -460,11 +584,23 @@ function Editor() {
   }
 
   const selected = nodes.find((node) => node.id === selectedId) ?? null;
+  const canvasAgents = useMemo(() => canvasAgentsFromNodes(nodes), [nodes]);
+  // Serialize so cards only re-render when inputs, names, or statuses change, not on every drag.
+  const canvasGraphJson = useMemo(
+    () =>
+      JSON.stringify(
+        buildCanvasGraph(nodes, edges, runPhase === "connecting" || runPhase === "running" || runPhase === "paused"),
+      ),
+    [edges, nodes, runPhase],
+  );
+  const canvasGraph = useMemo(() => JSON.parse(canvasGraphJson) as CanvasGraph, [canvasGraphJson]);
 
   return (
     <PatchContext.Provider value={patchNode}>
       <RunContext.Provider value={runActions}>
       <ModelsContext.Provider value={models}>
+      <CanvasAgentsContext.Provider value={canvasAgents}>
+      <GraphContext.Provider value={canvasGraph}>
       <HealthContext.Provider value={health}>
         <div className="flex h-screen flex-col bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100">
           <TopBar
@@ -494,10 +630,13 @@ function Editor() {
             workspaceValid={workspace.valid}
             workspacePath={workspace.path}
             workspaceError={workspace.error}
+            workspaceTemporary={workspace.temporary === true}
             workspaceReady={workspaceReady}
             notice={notice}
             runPhase={runPhase}
-            onRun={onRun}
+            onRun={runPhase === "stopped" ? onResume : onRun}
+            onStop={onStop}
+            onStartOver={onStartOver}
             runTotal={tokenPill.run}
             sessionTotal={tokenPill.session}
           />
@@ -510,6 +649,7 @@ function Editor() {
               onEdgesChange={onEdgesChange}
               onConnect={onConnect}
               isValidConnection={isValidConnection}
+              deleteKeyCode={blockCanvasDelete ? null : canvasDeleteKeys}
               onNodeClick={(_, node) => setSelectedId(node.id)}
               onPaneClick={() => setSelectedId(null)}
               onSelectionChange={({ nodes: selectedNodes }) => {
@@ -570,13 +710,15 @@ function Editor() {
           }}
         />
       </HealthContext.Provider>
+      </GraphContext.Provider>
+      </CanvasAgentsContext.Provider>
       </ModelsContext.Provider>
       </RunContext.Provider>
     </PatchContext.Provider>
   );
 }
 
-type RunPhase = "idle" | "connecting" | "running" | "paused";
+type RunPhase = "idle" | "connecting" | "running" | "paused" | "stopped";
 
 const AGENT_STATUSES = new Set<AgentStatus>(["idle", "running", "redoing", "done", "error"]);
 const HUMAN_STATUSES = new Set<HumanStatus>(["idle", "waiting", "approved", "declined"]);
@@ -589,6 +731,8 @@ type StreamDeps = {
   setTokenPill: Dispatch<SetStateAction<{ run: number; session: number }>>;
   sourceRef: { current: EventSource | null };
   generationRef: { current: number };
+  getNodes: () => FlowNode[];
+  getEdges: () => FlowEdge[];
 };
 
 function openRunStream(id: string, deps: StreamDeps) {
@@ -598,7 +742,7 @@ function openRunStream(id: string, deps: StreamDeps) {
   const source = new EventSource(`/api/runs/${encodeURIComponent(id)}/events`);
   deps.sourceRef.current = source;
   deps.setRunPhase("running");
-  let phase: "live" | "paused" | "idle" = "live";
+  let phase: "live" | "paused" | "idle" | "stopped" = "live";
   const active = () => generation === deps.generationRef.current;
 
   const release = () => {
@@ -689,12 +833,16 @@ function openRunStream(id: string, deps: StreamDeps) {
 
   source.addEventListener("artifact", (event) => {
     if (!active()) return;
-    const payload = readPayload<{ path?: string }>(event);
+    const payload = readPayload<{ path?: string; agentNodeId?: string }>(event);
     if (!payload?.path) return;
     const artifactPath = payload.path;
+    const agentNodeId = payload.agentNodeId;
+    // A human lists only files from the agents it reviews.
+    const shape = graphShape(deps.getNodes(), deps.getEdges());
     deps.setNodes((current) =>
       current.map((node) => {
         if (node.type !== "human" || node.data.artifactPaths.includes(artifactPath)) return node;
+        if (agentNodeId && !reviewSources(shape, node.id).includes(agentNodeId)) return node;
         return { ...node, data: { ...node.data, artifactPaths: [...node.data.artifactPaths, artifactPath] } };
       }),
     );
@@ -711,8 +859,15 @@ function openRunStream(id: string, deps: StreamDeps) {
     deps.setRunPhase("idle");
     release();
   });
-  source.addEventListener("stopped", () => {
+  source.addEventListener("stopped", (event) => {
     if (!active()) return;
+    const payload = readPayload<{ resumable?: boolean }>(event);
+    if (payload?.resumable === true) {
+      phase = "stopped";
+      deps.setRunPhase("stopped");
+      release();
+      return;
+    }
     phase = "idle";
     deps.setRunPhase("idle");
     release();
@@ -727,7 +882,7 @@ function openRunStream(id: string, deps: StreamDeps) {
       release();
       return;
     }
-    if (phase === "paused" || phase === "idle") {
+    if (phase === "paused" || phase === "idle" || phase === "stopped") {
       release();
       return;
     }

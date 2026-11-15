@@ -1,13 +1,53 @@
 /**
- * Responsibility: resolve the SKILL.md file directly inside a chosen folder.
- * Inputs: a directory path from the native folder dialog.
- * Outputs: the absolute real path of that SKILL.md file. The file is not copied.
+ * Responsibility: resolve the SKILL.md file directly inside a chosen folder, and the real path of chosen rule files.
+ * Inputs: directory or file paths from the native dialogs.
+ * Outputs: the absolute real path of each SKILL.md or rule file. Invalid picks are skipped. Files are not copied.
  */
 import type { Dirent } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { isSoftFsError } from "./json";
+import { samePath } from "./paths";
 import { LibraryError } from "./types";
+
+export type SkillFolderSkip = { path: string; error: string };
+
+export async function skillFilesInFolders(
+  dirs: string[],
+): Promise<{ paths: string[]; skipped: SkillFolderSkip[] }> {
+  const paths: string[] = [];
+  const skipped: SkillFolderSkip[] = [];
+  for (const dir of dirs) {
+    try {
+      const file = await skillFileInFolder(dir);
+      if (!paths.some((existing) => samePath(existing, file))) paths.push(file);
+    } catch (error) {
+      skipped.push({ path: dir, error: folderProblem(error) });
+    }
+  }
+  return { paths, skipped };
+}
+
+/** Real paths of the chosen files, without duplicates. A missing or non-file pick is skipped with its reason. */
+export async function realFiles(files: string[]): Promise<{ paths: string[]; skipped: SkillFolderSkip[] }> {
+  const paths: string[] = [];
+  const skipped: SkillFolderSkip[] = [];
+  for (const file of files) {
+    try {
+      const real = await absoluteRealFile(file);
+      if (!paths.some((existing) => samePath(existing, real))) paths.push(real);
+    } catch (error) {
+      const reason = error instanceof LibraryError && error.message.trim() !== "" ? error.message : "Path not found";
+      skipped.push({ path: file, error: reason });
+    }
+  }
+  return { paths, skipped };
+}
+
+function folderProblem(error: unknown): string {
+  if (error instanceof LibraryError && error.message.trim() !== "") return error.message;
+  return "That folder has no SKILL.md";
+}
 
 export async function skillFileInFolder(dir: string): Promise<string> {
   if (typeof dir !== "string" || dir.trim() === "") throw new LibraryError("Folder not found");

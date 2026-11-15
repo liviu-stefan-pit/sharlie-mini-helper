@@ -47,6 +47,51 @@ export async function importLibraryItem(input: {
   };
 }
 
+type ImportProblem = { path: string; error: string };
+
+export async function importLibraryItems(input: {
+  appLibraryRoot: string;
+  kind: "skill";
+  paths: string[];
+}): Promise<{ skills: LibrarySkill[]; errors: ImportProblem[] }>;
+export async function importLibraryItems(input: {
+  appLibraryRoot: string;
+  kind: "rule";
+  paths: string[];
+}): Promise<{ rules: LibraryRule[]; errors: ImportProblem[] }>;
+export async function importLibraryItems(input: {
+  appLibraryRoot: string;
+  kind: string;
+  paths: string[];
+}): Promise<{ skills: LibrarySkill[]; errors: ImportProblem[] } | { rules: LibraryRule[]; errors: ImportProblem[] }>;
+export async function importLibraryItems(input: {
+  appLibraryRoot: string;
+  kind: string;
+  paths: string[];
+}): Promise<{ skills: LibrarySkill[]; errors: ImportProblem[] } | { rules: LibraryRule[]; errors: ImportProblem[] }> {
+  const kind = input.kind;
+  if (kind !== "skill" && kind !== "rule") throw new LibraryError("kind must be skill or rule");
+  const items: (LibrarySkill | LibraryRule)[] = [];
+  const errors: ImportProblem[] = [];
+  const seen: string[] = [];
+  for (const requested of input.paths) {
+    if (seen.some((item) => samePath(item, requested))) continue;
+    seen.push(requested);
+    try {
+      items.push(await importLibraryItem({ appLibraryRoot: input.appLibraryRoot, kind, path: requested }));
+    } catch (error) {
+      errors.push({ path: requested, error: importFailure(error) });
+    }
+  }
+  return kind === "skill" ? { skills: items, errors } : { rules: items, errors };
+}
+
+function importFailure(error: unknown): string {
+  if (error instanceof LibraryError && error.message.trim() !== "") return error.message;
+  if (error instanceof Error && error.message.trim() !== "") return error.message;
+  return "Could not import";
+}
+
 export async function forgetImport(input: { appLibraryRoot: string; id: string }): Promise<void> {
   const id = requireText(input.id, "id");
   if (id.trim() === "") throw new LibraryError("id is required");

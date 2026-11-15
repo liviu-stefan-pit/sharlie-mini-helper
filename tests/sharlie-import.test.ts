@@ -266,6 +266,8 @@ function agentNode(id: string, agentName: string): PipelineNode {
     position: { x: 0, y: 0 },
     data: {
       modelId: "composer",
+      effort: "",
+      effortParamId: "",
       agentPath: "",
       agentName,
       status: "idle",

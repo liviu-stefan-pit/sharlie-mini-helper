@@ -11,6 +11,13 @@ export type TokenCounts = { input?: number; output?: number; total?: number };
 
 export type AgentNodeData = {
   modelId: string;
+  /** "" means not chosen yet. A run fills a blank from the model catalog. */
+  effort: string;
+  /**
+   * Parameter id sent with effort, such as "effort" or "reasoning_effort".
+   * "" means it was not stored. A run then uses the catalog id, or "effort" when the catalog has none.
+   */
+  effortParamId: string;
   agentPath: string;
   agentName: string;
   status: AgentStatus;

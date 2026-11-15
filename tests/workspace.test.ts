@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, test } from "node:test";
 import {
+  TEMP_WORKSPACE_DIRNAME,
   getActiveWorkspace,
   readAppSettings,
   validateWorkspacePath,
@@ -161,19 +162,38 @@ describe("workspace settings", () => {
   test("reports a deleted workspace folder", async () => {
     const appRoot = await fs.mkdtemp(path.join(os.tmpdir(), "sharlie-workspace-app-"));
     const folder = await fs.mkdtemp(path.join(os.tmpdir(), "sharlie-workspace-gone-"));
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "sharlie-workspace-temp-"));
     try {
       const real = await fs.realpath(folder);
       await writeAppSettings(appRoot, { version: 1, workspacePath: real });
       await fs.rm(folder, { recursive: true, force: true });
-      const active = await getActiveWorkspace(appRoot);
+      const active = await getActiveWorkspace(appRoot, tempRoot);
       assert.deepEqual(active, {
         path: real,
         valid: false,
         error: "Workspace folder does not exist",
       });
+      await assert.rejects(fs.stat(path.join(tempRoot, TEMP_WORKSPACE_DIRNAME)));
     } finally {
       await fs.rm(appRoot, { recursive: true, force: true });
       await fs.rm(folder, { recursive: true, force: true });
+      await fs.rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("uses a temporary folder when no workspace is stored", async () => {
+    const appRoot = await fs.mkdtemp(path.join(os.tmpdir(), "sharlie-workspace-app-"));
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "sharlie-workspace-temp-"));
+    try {
+      const active = await getActiveWorkspace(appRoot, tempRoot);
+      const folder = path.join(tempRoot, TEMP_WORKSPACE_DIRNAME);
+      const real = await fs.realpath(folder);
+      assert.deepEqual(active, { path: real, valid: true, temporary: true });
+      const stat = await fs.stat(folder);
+      assert.equal(stat.isDirectory(), true);
+    } finally {
+      await fs.rm(appRoot, { recursive: true, force: true });
+      await fs.rm(tempRoot, { recursive: true, force: true });
     }
   });
 });

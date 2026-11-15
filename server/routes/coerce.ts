@@ -40,6 +40,8 @@ export function coerceNode(value: unknown, index: number): PipelineNode {
       position,
       data: {
         modelId: typeof data.modelId === "string" ? data.modelId : "",
+        effort: typeof data.effort === "string" ? data.effort : "",
+        effortParamId: typeof data.effortParamId === "string" ? data.effortParamId : "",
         agentPath: typeof data.agentPath === "string" ? data.agentPath : "",
         agentName: typeof data.agentName === "string" ? data.agentName : "",
         status: "idle",
